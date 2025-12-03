@@ -8,7 +8,12 @@ StrokeSpline: 3D cubic spline with arc-length parameterization
 import numpy as np
 from typing import List, Tuple, Optional
 from scipy.interpolate import CubicSpline, splprep, splev
-from scipy.integrate import cumtrapz
+try:
+    # SciPy >= 1.14 renamed cumtrapz to cumulative_trapezoid
+    from scipy.integrate import cumulative_trapezoid as cumtrapz
+except ImportError:
+    # Fallback for older SciPy versions
+    from scipy.integrate import cumtrapz
 
 
 class StrokeSpline:

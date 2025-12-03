@@ -1,18 +1,114 @@
 # 기술적 고려사항 (Technical Considerations)
 
 **범위**: 전체 프로젝트  
-**목적**: 횡단적(cross-cutting) 기술 이슈 및 최적화 전략
+**목적**: 횡단적(cross-cutting) 기술 이슈 및 최적화 전략  
+**Last Updated**: 2025-12-03
 
 ---
 
 ## 📋 개요
 
 본 문서는 특정 Phase에 국한되지 않는 **공통 기술적 고려사항**을 다룹니다:
-- GPU 컨텍스트 관리
-- 메모리 최적화 (VRAM/RAM)
-- 성능 프로파일링
-- 에러 처리
-- 플랫폼 호환성
+
+-   **TBB DLL 충돌 및 Subprocess 아키텍처** (신규)
+-   GPU 컨텍스트 관리
+-   메모리 최적화 (VRAM/RAM)
+-   성능 프로파일링
+-   에러 처리
+-   플랫폼 호환성
+
+---
+
+## 🔴 0. TBB DLL 충돌 문제 (Critical - 2025-12-03)
+
+### 0.1 문제 발견
+
+Windows Blender 5.0 환경에서 PyTorch import 시 다음 에러 발생:
+
+```
+OSError: [WinError 1114] A dynamic link library (DLL) initialization routine failed.
+Error loading "...\.python_dependencies\torch\lib\c10.dll" or one of its dependencies.
+```
+
+**핵심 발견**:
+
+-   동일한 Python 실행파일(`python.exe`)로 Blender **외부**에서는 PyTorch 정상 동작
+-   Blender **프로세스 내**에서만 DLL 초기화 실패
+-   `--background` 모드에서도 동일하게 실패
+
+### 0.2 원인 분석
+
+**DLL 충돌 목록** (Process Explorer로 확인):
+
+| 충돌 DLL         | Blender 경로      | PyTorch 요구 | 상태                |
+| ---------------- | ----------------- | ------------ | ------------------- |
+| `tbb12.dll`      | `blender.shared\` | `torch\lib\` | 🔴 버전 충돌        |
+| `tbbmalloc.dll`  | `blender.shared\` | `torch\lib\` | 🔴 버전 충돌        |
+| `libiomp5md.dll` | -                 | `torch\lib\` | 🟡 OpenMP 충돌 가능 |
+
+**충돌 메커니즘**:
+
+1. Blender 시작 시 `tbb12.dll` (Intel TBB) 로드
+2. PyTorch의 `c10.dll`이 TBB 필요
+3. 이미 로드된 Blender의 TBB와 ABI 불일치
+4. DLL 초기화 실패 (`WinError 1114`)
+
+### 0.3 시도한 해결책 (모두 실패)
+
+| 방법                         | 결과    |
+| ---------------------------- | ------- |
+| `os.add_dll_directory()`     | ❌ 실패 |
+| DLL 사전 로드 (LoadLibraryW) | ❌ 실패 |
+| PATH 환경변수 수정           | ❌ 실패 |
+| `KMP_DUPLICATE_LIB_OK=TRUE`  | ❌ 실패 |
+| User site-packages 제거      | ❌ 실패 |
+| Blender `--background` 모드  | ❌ 실패 |
+
+### 0.4 해결책: Subprocess Actor 패턴
+
+**Dream Textures 애드온과 동일한 방식**으로 PyTorch를 별도 subprocess에서 실행.
+
+```python
+from multiprocessing import current_process, get_context
+
+# Subprocess 감지
+is_actor_process = current_process().name == "__actor__"
+
+if is_actor_process:
+    # Subprocess에서만 의존성 로드
+    _load_dependencies()  # PyTorch, gsplat 등
+```
+
+**아키텍처**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Blender Process (메인) - TBB 로드됨                            │
+│  ├── GLSL Viewport (60 FPS) - 영향 없음                        │
+│  ├── NumPy 연산 - 영향 없음                                     │
+│  └── IPC Client (Queue)                                         │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ multiprocessing.Queue
+                           │ SharedMemory (대용량 데이터)
+┌──────────────────────────▼──────────────────────────────────────┐
+│  Subprocess ("__actor__") - 별도 프로세스                        │
+│  ├── 자체 TBB 로드 (충돌 없음) ✓                                │
+│  ├── PyTorch + CUDA ✓                                           │
+│  └── gsplat ✓                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 0.5 IPC 성능
+
+| IPC 방식         | Latency  | 용도              |
+| ---------------- | -------- | ----------------- |
+| `Queue` (pickle) | 50-100ms | 명령, 작은 데이터 |
+| `SharedMemory`   | <1ms     | 대용량 NumPy 배열 |
+
+**10k Gaussians (2.3MB) 전송 시**:
+
+-   Queue (pickle): ~80ms
+-   SharedMemory: **<1ms** (zero-copy)
 
 ---
 
@@ -21,14 +117,16 @@
 ### 1.1 문제점
 
 **Blender + PyTorch + GLSL 공존**:
-- Blender: OpenGL 컨텍스트 소유 (3D Viewport)
-- PyTorch: CUDA 컨텍스트 소유 (gsplat computation)
-- GLSL Shaders: OpenGL 텍스처 공유
+
+-   Blender: OpenGL 컨텍스트 소유 (3D Viewport)
+-   PyTorch: CUDA 컨텍스트 소유 (gsplat computation)
+-   GLSL Shaders: OpenGL 텍스처 공유
 
 **잠재적 충돌**:
-- CUDA와 OpenGL 동시 사용 시 컨텍스트 스위칭 오버헤드
-- 메모리 중복 할당
-- Thread safety 이슈
+
+-   CUDA와 OpenGL 동시 사용 시 컨텍스트 스위칭 오버헤드
+-   메모리 중복 할당
+-   Thread safety 이슈
 
 ### 1.2 해결 전략
 
@@ -41,26 +139,26 @@ def modal(self, context, event):
     if event.type == 'MOUSEMOVE' and self.painting:
         # 1. Update GLSL viewport FIRST (low latency)
         self.update_viewport_immediate(stamp)
-        
+
         # 2. Queue computation for later (after stroke finishes)
         self.pending_deformations.append(stamp)
-        
+
         context.area.tag_redraw()
         return {'RUNNING_MODAL'}
-    
+
     if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
         # 3. Flush GLSL pipeline
         bgl.glFlush()
-        
+
         # 4. Switch to CUDA context (gsplat)
         torch.cuda.synchronize()
-        
+
         # 5. Process deformations
         self.apply_deformations_batch(self.pending_deformations)
-        
+
         # 6. Sync back to GLSL
         self.sync_to_viewport()
-        
+
         return {'FINISHED'}
 ```
 
@@ -78,30 +176,30 @@ class CUDAGLInterop:
     CUDA-OpenGL interoperability for zero-copy data sharing.
     WARNING: Experimental, platform-dependent.
     """
-    
+
     def __init__(self, gl_texture_id):
         self.gl_texture_id = gl_texture_id
         self.cuda_resource = None
-    
+
     def register_texture(self):
         """Register OpenGL texture with CUDA."""
         import pycuda.gl as cuda_gl
-        
+
         # Register texture
         self.cuda_resource = cuda_gl.RegisteredImage(
             self.gl_texture_id,
             gl.GL_TEXTURE_3D,
             cuda_gl.graphics_map_flags.WRITE_DISCARD
         )
-    
+
     def map_to_cuda(self):
         """Map texture to CUDA tensor (zero-copy)."""
         mapping = self.cuda_resource.map()
         array = mapping.array(0, 0)
-        
+
         # Convert to PyTorch tensor
         # ... requires custom CUDA kernel
-        
+
         return tensor
 ```
 
@@ -159,26 +257,26 @@ class DeformationGPU:
     def apply_large_batch(self, gaussians, chunk_size=10000):
         """
         Process large batches in chunks to avoid OOM.
-        
+
         Args:
             gaussians: List of Gaussian objects
             chunk_size: Max gaussians per chunk
-        
+
         Returns:
             Deformed gaussians
         """
         results = []
-        
+
         for i in range(0, len(gaussians), chunk_size):
             chunk = gaussians[i:i+chunk_size]
-            
+
             # Process chunk
             deformed_chunk = self.apply(chunk)
             results.extend(deformed_chunk)
-            
+
             # Clear cache
             torch.cuda.empty_cache()
-        
+
         return results
 ```
 
@@ -207,30 +305,30 @@ import torch
 
 class VRAMMonitor:
     """Monitor VRAM usage during operations."""
-    
+
     @staticmethod
     def get_usage():
         """
         Get current VRAM usage.
-        
+
         Returns:
             dict: {'allocated': float (GB), 'cached': float (GB), 'free': float (GB)}
         """
         if not torch.cuda.is_available():
             return None
-        
+
         allocated = torch.cuda.memory_allocated() / 1e9
         cached = torch.cuda.memory_reserved() / 1e9
         total = torch.cuda.get_device_properties(0).total_memory / 1e9
         free = total - allocated
-        
+
         return {
             'allocated': allocated,
             'cached': cached,
             'free': free,
             'total': total
         }
-    
+
     @staticmethod
     def print_summary():
         """Print VRAM usage summary."""
@@ -258,20 +356,20 @@ import time
 
 class GPUTimer:
     """Measure GPU execution time."""
-    
+
     def __init__(self):
         self.start_event = torch.cuda.Event(enable_timing=True)
         self.end_event = torch.cuda.Event(enable_timing=True)
-    
+
     def __enter__(self):
         self.start_event.record()
         return self
-    
+
     def __exit__(self, *args):
         self.end_event.record()
         torch.cuda.synchronize()
         self.elapsed = self.start_event.elapsed_time(self.end_event)  # ms
-    
+
     def get_elapsed(self):
         """Get elapsed time in milliseconds."""
         return self.elapsed
@@ -290,42 +388,42 @@ print(f"Deformation took {timer.get_elapsed():.2f}ms")
 
 class PerformanceProfiler:
     """Profile full painting pipeline."""
-    
+
     def __init__(self):
         self.timings = {}
-    
+
     def measure(self, name):
         """Context manager for timing."""
         import time
-        
+
         class TimingContext:
             def __init__(self, profiler, name):
                 self.profiler = profiler
                 self.name = name
-            
+
             def __enter__(self):
                 self.start = time.perf_counter()
                 return self
-            
+
             def __exit__(self, *args):
                 elapsed = (time.perf_counter() - self.start) * 1000
                 if self.name not in self.profiler.timings:
                     self.profiler.timings[self.name] = []
                 self.profiler.timings[self.name].append(elapsed)
-        
+
         return TimingContext(self, name)
-    
+
     def print_summary(self):
         """Print timing summary."""
         import numpy as np
-        
+
         print("\n=== Performance Profile ===")
         for name, times in self.timings.items():
             avg = np.mean(times)
             std = np.std(times)
             min_t = np.min(times)
             max_t = np.max(times)
-            
+
             print(f"{name}:")
             print(f"  Avg: {avg:.2f}ms (±{std:.2f}ms)")
             print(f"  Range: {min_t:.2f}ms - {max_t:.2f}ms")
@@ -348,29 +446,31 @@ profiler.print_summary()
 
 ### 3.2 Performance Targets
 
-| Operation | Target | Acceptable | Critical |
-|-----------|--------|------------|----------|
-| Stamp generation | <5ms | <10ms | >20ms |
-| Viewport update (incremental) | <2ms | <5ms | >10ms |
-| Deformation (100 stamps) | <500ms | <1000ms | >2000ms |
-| Inpainting (100 iter) | <5s | <10s | >20s |
-| Final render (1080p) | <10s | <30s | >60s |
+| Operation                     | Target | Acceptable | Critical |
+| ----------------------------- | ------ | ---------- | -------- |
+| Stamp generation              | <5ms   | <10ms      | >20ms    |
+| Viewport update (incremental) | <2ms   | <5ms       | >10ms    |
+| Deformation (100 stamps)      | <500ms | <1000ms    | >2000ms  |
+| Inpainting (100 iter)         | <5s    | <10s       | >20s     |
+| Final render (1080p)          | <10s   | <30s       | >60s     |
 
 ### 3.3 Bottleneck 분석
 
 **Common Bottlenecks**:
 
 1. **CPU-GPU Transfer** (most common)
-   - Symptom: Low GPU utilization, high CPU usage
-   - Solution: Batch transfers, use pinned memory
+
+    - Symptom: Low GPU utilization, high CPU usage
+    - Solution: Batch transfers, use pinned memory
 
 2. **Synchronization Overhead**
-   - Symptom: `torch.cuda.synchronize()` taking >5ms
-   - Solution: Minimize sync points, use async operations
+
+    - Symptom: `torch.cuda.synchronize()` taking >5ms
+    - Solution: Minimize sync points, use async operations
 
 3. **Texture Upload** (GLSL)
-   - Symptom: `glTexSubImage3D` >10ms
-   - Solution: Use PBO (Pixel Buffer Objects), smaller updates
+    - Symptom: `glTexSubImage3D` >10ms
+    - Solution: Use PBO (Pixel Buffer Objects), smaller updates
 
 ---
 
@@ -388,26 +488,26 @@ import torch
 def safe_gpu_operation(func, *args, fallback_chunk_size=None, **kwargs):
     """
     Safely execute GPU operation with OOM handling.
-    
+
     Args:
         func: Function to execute
         fallback_chunk_size: If OOM, retry with chunking
-    
+
     Returns:
         Result of func or None if failed
     """
     try:
         return func(*args, **kwargs)
-    
+
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()
-        
+
         if fallback_chunk_size:
             print(f"OOM detected, retrying with chunk size {fallback_chunk_size}")
-            
+
             # Retry with chunking
             # ... implement chunked version ...
-            
+
             return chunked_result
         else:
             raise RuntimeError(
@@ -433,14 +533,14 @@ class BlenderGPUContext:
             print("⚠ CUDA not available, falling back to CPU")
             self.device = torch.device('cpu')
             self.backend = 'cpu'
-            
+
             # Warn user
             import bpy
             def draw_warning(self, context):
                 layout = self.layout
                 layout.label(text="GPU not available!", icon='ERROR')
                 layout.label(text="Performance will be degraded.")
-            
+
             bpy.context.window_manager.popup_menu(draw_warning, title="Warning", icon='ERROR')
 ```
 
@@ -456,39 +556,39 @@ class BrushManager:
     def load(self, filepath, retry=True):
         """
         Load brush with error handling.
-        
+
         Args:
             filepath: Path to brush file
             retry: Whether to retry on failure
-        
+
         Returns:
             Brush object or None
         """
         filepath = Path(filepath)
-        
+
         # Check existence
         if not filepath.exists():
             raise FileNotFoundError(f"Brush file not found: {filepath}")
-        
+
         # Check permission
         if not os.access(filepath, os.R_OK):
             raise PermissionError(f"Cannot read brush file: {filepath}")
-        
+
         try:
             # Load JSON
             with open(filepath, 'r') as f:
                 data = json.load(f)
-            
+
             # Validate schema
             self.validate_brush_data(data)
-            
+
             # Create brush
             brush = Brush.from_dict(data)
             return brush
-        
+
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in brush file: {e}")
-        
+
         except Exception as e:
             if retry:
                 print(f"Failed to load brush, retrying: {e}")
@@ -514,7 +614,7 @@ import platform
 if platform.system() == "Windows":
     # Use forward slashes for paths (Blender compatibility)
     addon_path = str(Path(__file__).parent).replace('\\', '/')
-    
+
     # Python executable
     python_exe = Path(sys.executable).parent.parent / "python" / "bin" / "python.exe"
 ```
@@ -531,7 +631,7 @@ if platform.system() == "Darwin":
             device = torch.device('mps')  # Apple Silicon GPU
         else:
             device = torch.device('cpu')
-    
+
     # Python executable
     python_exe = Path(sys.executable).parent.parent / "python" / "bin" / "python3.10"
 ```
@@ -544,12 +644,12 @@ if platform.system() == "Darwin":
 if platform.system() == "Linux":
     # Check CUDA library path
     import os
-    
+
     cuda_paths = [
         "/usr/local/cuda/lib64",
         "/usr/lib/x86_64-linux-gnu",
     ]
-    
+
     for path in cuda_paths:
         if os.path.exists(path):
             os.environ['LD_LIBRARY_PATH'] = path + ":" + os.environ.get('LD_LIBRARY_PATH', '')
@@ -570,10 +670,10 @@ bl_info = {
 def check_blender_version():
     """Check if Blender version is compatible."""
     import bpy
-    
+
     min_version = (3, 6, 0)
     current = bpy.app.version
-    
+
     if current < min_version:
         raise RuntimeError(
             f"Blender {min_version[0]}.{min_version[1]} or higher required. "
@@ -595,12 +695,12 @@ import numpy as np
 
 class DebugVisualizer:
     """Visualize gaussians and debug info in Blender."""
-    
+
     @staticmethod
     def draw_gaussian_centers(scene_data, name="GaussianCenters"):
         """
         Draw gaussian centers as empties in Blender.
-        
+
         Args:
             scene_data: SceneData object
             name: Collection name
@@ -608,34 +708,34 @@ class DebugVisualizer:
         # Create collection
         col = bpy.data.collections.new(name)
         bpy.context.scene.collection.children.link(col)
-        
+
         # Draw centers
         for i, g in enumerate(scene_data.gaussians):
             empty = bpy.data.objects.new(f"G_{i}", None)
             empty.empty_display_size = 0.1
             empty.empty_display_type = 'SPHERE'
             empty.location = g.position
-            
+
             col.objects.link(empty)
-    
+
     @staticmethod
     def draw_spline(spline_points, name="SplineCurve"):
         """
         Draw spline curve in Blender.
-        
+
         Args:
             spline_points: np.ndarray [N, 3]
             name: Curve name
         """
         curve_data = bpy.data.curves.new(name, type='CURVE')
         curve_data.dimensions = '3D'
-        
+
         polyline = curve_data.splines.new('POLY')
         polyline.points.add(len(spline_points) - 1)
-        
+
         for i, point in enumerate(spline_points):
             polyline.points[i].co = (*point, 1.0)
-        
+
         curve_obj = bpy.data.objects.new(name, curve_data)
         bpy.context.scene.collection.objects.link(curve_obj)
 ```
@@ -651,36 +751,36 @@ from pathlib import Path
 def setup_logger(name="npr_gaussian", level=logging.INFO):
     """
     Setup logger for addon.
-    
+
     Args:
         name: Logger name
         level: Logging level
-    
+
     Returns:
         logging.Logger
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    
+
     # Console handler
     console = logging.StreamHandler()
     console.setLevel(level)
     formatter = logging.Formatter('[%(name)s] %(levelname)s: %(message)s')
     console.setFormatter(formatter)
     logger.addHandler(console)
-    
+
     # File handler (Blender temp directory)
     import tempfile
     log_file = Path(tempfile.gettempdir()) / "npr_gaussian.log"
-    
+
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.DEBUG)
     file_formatter = logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
-    
+
     logger.info(f"Logger initialized. Log file: {log_file}")
-    
+
     return logger
 
 # Usage
@@ -707,20 +807,20 @@ from npr_core.scene_data import SceneData
 def test_brush_placement():
     """Test brush stamp placement."""
     brush = Brush.from_file("data/brushes/test.png")
-    
+
     stamp = brush.place_at(
         position=np.array([0, 0, 0]),
         normal=np.array([0, 0, 1]),
         size_multiplier=1.0
     )
-    
+
     assert len(stamp.gaussians) > 0
     assert stamp.center is not None
 
 def test_scene_data_add_remove():
     """Test scene data manipulation."""
     scene = SceneData()
-    
+
     # Add gaussians
     gaussian = Gaussian(
         position=np.array([0, 0, 0]),
@@ -728,9 +828,9 @@ def test_scene_data_add_remove():
         opacity=0.5
     )
     scene.add_gaussian(gaussian)
-    
+
     assert len(scene.gaussians) == 1
-    
+
     # Remove
     scene.remove_gaussian(0)
     assert len(scene.gaussians) == 0
@@ -755,13 +855,13 @@ def test_painting_workflow():
     """Test full painting workflow."""
     # Load brush
     bpy.ops.gaussian.load_brush(filepath="data/brushes/test.json")
-    
+
     # Start painting
     bpy.ops.gaussian.paint('INVOKE_DEFAULT')
-    
+
     # Simulate stroke
     # ... (requires event simulation)
-    
+
     # Check scene data
     scene_data = bpy.context.scene.gaussian_scene_data
     assert len(scene_data.gaussians) > 0
@@ -771,25 +871,28 @@ def test_painting_workflow():
 
 ## 📚 참고 자료
 
-- PyTorch Performance Tuning: https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
-- Blender GPU Module: https://docs.blender.org/api/current/gpu.html
-- CUDA Best Practices: https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/
+-   PyTorch Performance Tuning: https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
+-   Blender GPU Module: https://docs.blender.org/api/current/gpu.html
+-   CUDA Best Practices: https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/
 
 ---
 
 ## 🎯 체크리스트
 
 ### 성능
-- [ ] Profiling 도구 구현
-- [ ] 모든 operation target 달성
-- [ ] VRAM 사용량 < 8GB 유지
+
+-   [ ] Profiling 도구 구현
+-   [ ] 모든 operation target 달성
+-   [ ] VRAM 사용량 < 8GB 유지
 
 ### 안정성
-- [ ] GPU OOM 처리
-- [ ] File I/O 에러 처리
-- [ ] Platform compatibility 검증
+
+-   [ ] GPU OOM 처리
+-   [ ] File I/O 에러 처리
+-   [ ] Platform compatibility 검증
 
 ### 디버깅
-- [ ] Logger 시스템 구현
-- [ ] Debug visualization 도구
-- [ ] Unit tests 작성
+
+-   [ ] Logger 시스템 구현
+-   [ ] Debug visualization 도구
+-   [ ] Unit tests 작성

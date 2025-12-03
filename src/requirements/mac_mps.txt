@@ -1,0 +1,11 @@
+# macOS Apple Silicon (Metal/MPS)
+# PyTorch with MPS support
+
+torch>=2.0.0
+torchvision>=0.15.0
+
+# NumPy must be <2.0 for PyTorch compatibility
+numpy>=1.24.0,<2.0
+pillow>=10.0.0
+scipy>=1.11.0
+PyYAML>=6.0

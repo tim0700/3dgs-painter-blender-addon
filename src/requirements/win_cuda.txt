@@ -1,0 +1,9 @@
+# Windows + NVIDIA CUDA
+# PyTorch with CUDA will be installed separately based on detected CUDA version
+# This file contains non-PyTorch dependencies
+
+# NumPy must be <2.0 for PyTorch compatibility (NumPy 2.0 broke C ABI)
+numpy>=1.24.0,<2.0
+pillow>=10.0.0
+scipy>=1.11.0
+PyYAML>=6.0
