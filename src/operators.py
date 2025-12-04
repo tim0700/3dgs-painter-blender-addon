@@ -3,8 +3,76 @@
 
 import bpy
 from bpy.types import Operator
+from bpy.props import FloatProperty, FloatVectorProperty, BoolProperty, IntProperty
 import threading
+import numpy as np
+from mathutils import Vector
 
+
+# =============================================================================
+# Raycasting and Input Helpers (Phase 4)
+# =============================================================================
+
+def raycast_mouse_to_surface(context, event):
+    """
+    Convert mouse coordinates to 3D surface position.
+    
+    Args:
+        context: bpy.context
+        event: Modal operator event
+        
+    Returns:
+        tuple: (location: Vector, normal: Vector, hit: bool)
+    """
+    from bpy_extras import view3d_utils
+    
+    region = context.region
+    rv3d = context.region_data
+    
+    if region is None or rv3d is None:
+        return Vector((0, 0, 0)), Vector((0, 0, 1)), False
+    
+    coord = (event.mouse_region_x, event.mouse_region_y)
+    
+    # Get ray direction
+    view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+    ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+    
+    # Normalize view_vector for proper distance calculation
+    view_vector_normalized = view_vector.normalized()
+    
+    # Raycast against scene objects with distance limit
+    # Use view_layer.depsgraph for proper object evaluation
+    depsgraph = context.view_layer.depsgraph
+    result, location, normal, index, obj, matrix = context.scene.ray_cast(
+        depsgraph,
+        ray_origin,
+        view_vector_normalized,
+        distance=10000.0  # Maximum ray distance
+    )
+    
+    if result:
+        return location.copy(), normal.normalized(), True
+    else:
+        # No fallback - return None to indicate no valid surface hit
+        return None, None, False
+
+
+def get_tablet_pressure(event):
+    """
+    Get tablet pressure (0-1 range).
+    
+    Returns:
+        float: pressure value, 1.0 if not using tablet
+    """
+    if hasattr(event, 'pressure') and event.pressure > 0:
+        return event.pressure
+    return 1.0
+
+
+# =============================================================================
+# Dependency Installation Operators
+# =============================================================================
 
 class THREEGDS_OT_install_dependencies(Operator):
     """Install missing Python packages for 3DGS Painter"""
@@ -376,6 +444,370 @@ class THREEGDS_OT_kill_subprocess(Operator):
         return {'FINISHED'}
 
 
+# =============================================================================
+# Gaussian Painting Operators (Phase 4) - WorkSpaceTool Architecture
+# =============================================================================
+
+# Global scene data storage for painting session persistence
+_paint_session_data = {
+    'scene_data': None,
+    'stroke_painter': None,
+    'brush': None,
+}
+
+
+def get_or_create_paint_session(context):
+    """Get or create painting session data (persists across strokes)."""
+    from .npr_core.scene_data import SceneData
+    from .npr_core.brush import BrushStamp, StrokePainter
+    
+    global _paint_session_data
+    
+    if _paint_session_data['scene_data'] is None:
+        _paint_session_data['scene_data'] = SceneData()
+    
+    scene = context.scene
+    
+    # Create/update brush based on current settings
+    brush = BrushStamp()
+    brush_size = scene.npr_brush_size
+    brush_opacity = scene.npr_brush_opacity
+    brush_spacing = scene.npr_brush_spacing
+    brush_color = scene.npr_brush_color
+    brush_pattern = scene.npr_brush_pattern
+    num_gaussians = scene.npr_brush_num_gaussians
+    
+    if brush_pattern == 'CIRCULAR':
+        brush.create_circular_pattern(
+            num_gaussians=num_gaussians,
+            radius=0.1 * brush_size,
+            gaussian_scale=0.02 * brush_size,
+            opacity=brush_opacity
+        )
+    elif brush_pattern == 'LINE':
+        brush.create_line_pattern(
+            num_gaussians=num_gaussians,
+            length=0.2 * brush_size,
+            thickness=0.02 * brush_size,
+            opacity=brush_opacity
+        )
+    elif brush_pattern == 'GRID':
+        grid_size = int(np.sqrt(num_gaussians))
+        brush.create_grid_pattern(
+            grid_size=max(2, grid_size),
+            spacing=0.04 * brush_size,
+            gaussian_scale=0.015 * brush_size,
+            opacity=brush_opacity
+        )
+    
+    brush.apply_parameters(
+        color=np.array(brush_color, dtype=np.float32),
+        spacing=brush_spacing * brush_size * 0.2
+    )
+    
+    _paint_session_data['brush'] = brush
+    _paint_session_data['stroke_painter'] = StrokePainter(
+        brush=brush,
+        scene_gaussians=_paint_session_data['scene_data']
+    )
+    
+    return _paint_session_data
+
+
+def clear_paint_session():
+    """Clear the paint session data."""
+    global _paint_session_data
+    _paint_session_data = {
+        'scene_data': None,
+        'stroke_painter': None,
+        'brush': None,
+    }
+
+
+class THREEGDS_OT_GaussianPaintStroke(Operator):
+    """Paint a single stroke with Gaussian Splats (invoked by WorkSpaceTool keymap)"""
+    bl_idname = "threegds.gaussian_paint_stroke"
+    bl_label = "Gaussian Paint Stroke"
+    bl_description = "Paint a stroke with Gaussian splats"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    # Stroke mode property (for potential future erase functionality)
+    mode: bpy.props.EnumProperty(
+        name="Mode",
+        items=[
+            ('ADD', "Add", "Add gaussians"),
+            ('REMOVE', "Remove", "Remove gaussians (not implemented)"),
+        ],
+        default='ADD'
+    )
+    
+    # Instance variables (initialized in invoke)
+    # painting: bool
+    # stroke_painter: StrokePainter
+    # scene_data: SceneData  
+    # brush: BrushStamp
+    # viewport_renderer: GaussianViewportRenderer
+    # _draw_handler: draw handler for brush preview
+    
+    @classmethod
+    def poll(cls, context):
+        return context.area and context.area.type == 'VIEW_3D'
+    
+    def invoke(self, context, event):
+        from .viewport.viewport_renderer import GaussianViewportRenderer
+        
+        # Get or create paint session
+        session = get_or_create_paint_session(context)
+        self.scene_data = session['scene_data']
+        self.stroke_painter = session['stroke_painter']
+        self.brush = session['brush']
+        
+        self.painting = False
+        self._draw_handler = None
+        
+        # Get viewport renderer
+        self.viewport_renderer = GaussianViewportRenderer.get_instance()
+        if not self.viewport_renderer.enabled:
+            self.viewport_renderer.register()
+        
+        # Register brush preview draw handler
+        self._register_brush_preview(context)
+        
+        # Store initial mouse position for brush preview
+        self._mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+        
+        # Start stroke immediately on invoke (tool keymap triggers on PRESS)
+        location, normal, hit = raycast_mouse_to_surface(context, event)
+        pressure = get_tablet_pressure(event)
+        
+        # Only start stroke if we hit a surface
+        if not hit or location is None:
+            # No surface hit - still enter modal but don't start painting yet
+            self.painting = False
+            context.window_manager.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
+        
+        scene = context.scene
+        self.painting = True
+        
+        # Scale brush by pressure
+        effective_size = scene.npr_brush_size * (0.5 + 0.5 * pressure)
+        self.brush.apply_parameters(
+            color=np.array(scene.npr_brush_color, dtype=np.float32),
+            size_multiplier=effective_size,
+            global_opacity=scene.npr_brush_opacity * pressure
+        )
+        
+        # Start stroke
+        self.stroke_painter.start_stroke(
+            position=np.array(location, dtype=np.float32),
+            normal=np.array(normal, dtype=np.float32),
+            enable_deformation=scene.npr_enable_deformation
+        )
+        
+        # Update viewport
+        self._sync_viewport()
+        context.area.tag_redraw()
+        
+        # Set up modal handler for drag
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+    
+    def modal(self, context, event):
+        scene = context.scene
+        
+        # Update mouse position for brush preview
+        self._mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+        context.area.tag_redraw()
+        
+        # Continue stroke on mouse move
+        if event.type == 'MOUSEMOVE':
+            location, normal, hit = raycast_mouse_to_surface(context, event)
+            
+            # If no surface hit, finish current stroke segment (if painting)
+            if not hit or location is None:
+                if self.painting:
+                    # Finish the current stroke segment
+                    self.stroke_painter.finish_stroke(
+                        enable_deformation=scene.npr_enable_deformation,
+                        enable_inpainting=False
+                    )
+                    self.painting = False
+                return {'RUNNING_MODAL'}
+            
+            pressure = get_tablet_pressure(event)
+            
+            # If not painting yet but we hit a surface, start a new stroke
+            if not self.painting:
+                self.painting = True
+                effective_size = scene.npr_brush_size * (0.5 + 0.5 * pressure)
+                self.brush.apply_parameters(
+                    color=np.array(scene.npr_brush_color, dtype=np.float32),
+                    size_multiplier=effective_size,
+                    global_opacity=scene.npr_brush_opacity * pressure
+                )
+                self.stroke_painter.start_stroke(
+                    position=np.array(location, dtype=np.float32),
+                    normal=np.array(normal, dtype=np.float32),
+                    enable_deformation=scene.npr_enable_deformation
+                )
+                self._sync_viewport()
+                return {'RUNNING_MODAL'}
+            
+            # Update brush parameters based on pressure
+            effective_size = scene.npr_brush_size * (0.5 + 0.5 * pressure)
+            self.brush.apply_parameters(
+                size_multiplier=effective_size,
+                global_opacity=scene.npr_brush_opacity * pressure
+            )
+            
+            # Update stroke
+            self.stroke_painter.update_stroke(
+                position=np.array(location, dtype=np.float32),
+                normal=np.array(normal, dtype=np.float32)
+            )
+            
+            # Update viewport (incremental)
+            self._sync_viewport()
+            return {'RUNNING_MODAL'}
+        
+        # Finish stroke on left mouse release
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            self._finish_stroke(context)
+            return {'FINISHED'}
+        
+        # Cancel on escape or right-click
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            self._finish_stroke(context)
+            return {'CANCELLED'}
+        
+        return {'RUNNING_MODAL'}
+    
+    def _register_brush_preview(self, context):
+        """Register draw handler for brush cursor preview."""
+        import gpu
+        from gpu_extras.presets import draw_circle_2d
+        
+        def draw_brush_cursor():
+            if not hasattr(self, '_mouse_pos'):
+                return
+            
+            scene = context.scene
+            # Draw circle at mouse position
+            # Size is approximate - would need proper 3D→2D projection for accuracy
+            radius = scene.npr_brush_size * 20  # Rough pixel approximation
+            color = (*scene.npr_brush_color, 0.5)  # RGBA with alpha
+            
+            gpu.state.blend_set('ALPHA')
+            draw_circle_2d(self._mouse_pos, color, radius, segments=32)
+            gpu.state.blend_set('NONE')
+        
+        self._draw_handler = bpy.types.SpaceView3D.draw_handler_add(
+            draw_brush_cursor, (), 'WINDOW', 'POST_PIXEL'
+        )
+    
+    def _unregister_brush_preview(self):
+        """Unregister brush preview draw handler."""
+        if self._draw_handler:
+            bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler, 'WINDOW')
+            self._draw_handler = None
+    
+    def _sync_viewport(self):
+        """Sync scene data to viewport renderer."""
+        if self.viewport_renderer and self.scene_data.count > 0:
+            self.viewport_renderer.update_gaussians(scene_data=self.scene_data)
+    
+    def _finish_stroke(self, context):
+        """Finish the current stroke."""
+        scene = context.scene
+        self.painting = False
+        
+        # Finish stroke (optionally with deformation)
+        self.stroke_painter.finish_stroke(
+            enable_deformation=scene.npr_enable_deformation,
+            enable_inpainting=False
+        )
+        
+        # Full viewport sync after deformation
+        self._sync_viewport()
+        
+        # Unregister brush preview
+        self._unregister_brush_preview()
+        
+        context.area.tag_redraw()
+        self.report({'INFO'}, f"Stroke complete. Total gaussians: {self.scene_data.count}")
+    
+    def cancel(self, context):
+        self._unregister_brush_preview()
+
+
+class THREEGDS_OT_ClearPaintedGaussians(Operator):
+    """Clear all painted gaussians"""
+    bl_idname = "threegds.clear_painted_gaussians"
+    bl_label = "Clear Painted Gaussians"
+    bl_description = "Remove all painted gaussians from viewport"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        from .viewport.viewport_renderer import GaussianViewportRenderer
+        
+        # Clear viewport
+        renderer = GaussianViewportRenderer.get_instance()
+        renderer.clear()
+        renderer.request_redraw()
+        
+        # Clear paint session
+        clear_paint_session()
+        
+        self.report({'INFO'}, "All painted gaussians cleared")
+        return {'FINISHED'}
+
+
+class THREEGDS_OT_ApplyDeformation(Operator):
+    """Apply deformation to painted strokes via subprocess"""
+    bl_idname = "threegds.apply_deformation"
+    bl_label = "Apply Deformation"
+    bl_description = "Apply spline-based deformation to painted strokes using GPU"
+    bl_options = {'REGISTER'}
+    
+    batch_size: IntProperty(
+        name="Batch Size",
+        description="Number of stamps to process per timer tick",
+        default=10,
+        min=1,
+        max=100
+    )
+    
+    _timer = None
+    _future = None
+    _progress = 0
+    
+    def invoke(self, context, event):
+        # TODO: Implement timer-based deformation in subprocess
+        # This will be implemented in Phase 4 Week 2-3
+        self.report({'WARNING'}, "Deformation operator not yet implemented")
+        return {'CANCELLED'}
+    
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            if self._future and self._future.done:
+                self._cleanup(context)
+                return {'FINISHED'}
+            
+            context.area.tag_redraw()
+        
+        if event.type == 'ESC':
+            self._cleanup(context)
+            return {'CANCELLED'}
+        
+        return {'RUNNING_MODAL'}
+    
+    def _cleanup(self, context):
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+
+
 # Registration
 classes = [
     THREEGDS_OT_install_dependencies,
@@ -384,6 +816,10 @@ classes = [
     THREEGDS_OT_test_subprocess,
     THREEGDS_OT_test_subprocess_cuda,
     THREEGDS_OT_kill_subprocess,
+    # Phase 4 painting operators (WorkSpaceTool architecture)
+    THREEGDS_OT_GaussianPaintStroke,
+    THREEGDS_OT_ClearPaintedGaussians,
+    THREEGDS_OT_ApplyDeformation,
 ]
 
 

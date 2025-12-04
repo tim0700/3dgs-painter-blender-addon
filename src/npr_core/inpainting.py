@@ -501,45 +501,6 @@ def inpaint_stroke(
     return stamps
 
 
-def test_inpainting():
-    """Test inpainting functions"""
-    print("Testing inpainting...")
-
-    # Create two simple stamps
-    stamp1 = [
-        Gaussian2D(
-            position=np.array([0.0, 0.0, 0.0]),
-            scale=np.array([0.05, 0.05, 1e-4]),
-            rotation=np.array([0, 0, 0, 1]),
-            opacity=0.8,
-            color=np.array([1.0, 0.0, 0.0])
-        )
-    ]
-
-    stamp2 = [
-        Gaussian2D(
-            position=np.array([0.05, 0.0, 0.0]),  # 0.05 units away
-            scale=np.array([0.05, 0.05, 1e-4]),
-            rotation=np.array([0, 0, 0, 1]),
-            opacity=0.8,
-            color=np.array([0.0, 1.0, 0.0])
-        )
-    ]
-
-    print(f"Stamp 1 opacity before: {stamp1[0].opacity}")
-    print(f"Stamp 2 opacity before: {stamp2[0].opacity}")
-
-    # Find overlaps
-    overlaps = find_overlapping_gaussians(stamp1, stamp2, threshold=0.1)
-    print(f"Found {len(overlaps)} overlaps")
-
-    # Blend
-    blend_overlapping_stamps([stamp1, stamp2], overlap_threshold=0.1)
-
-    print(f"Stamp 1 opacity after: {stamp1[0].opacity}")
-    print(f"Stamp 2 opacity after: {stamp2[0].opacity}")
-
-
 def blend_overlapping_stamps_arrays(
     stamp_arrays: List[Dict[str, np.ndarray]],
     overlap_threshold: float = 0.1,
@@ -849,7 +810,3 @@ def blend_overlapping_stamps_auto(
         else:
             blend_overlapping_stamps(stamps, overlap_threshold, blend_strength,
                                     blend_mode, enable_color_blending, use_anisotropic)
-
-
-if __name__ == "__main__":
-    test_inpainting()

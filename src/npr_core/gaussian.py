@@ -1,6 +1,7 @@
 """
-Gaussian2D: 2D 평면에 제한된 3D Gaussian Splat
-z=0 평면에서 동작하도록 3DGS를 단순화
+Gaussian2D: 3D Gaussian Splat for NPR painting
+
+Originally designed for 2D plane (z=0), now extended for full 3D surface painting.
 """
 
 import numpy as np
@@ -10,10 +11,10 @@ import copy
 
 class Gaussian2D:
     """
-    2D Gaussian Splat representation
+    Gaussian Splat representation for NPR painting
 
-    3D Gaussian Splatting을 z=0 평면에 제한하여 2D 회화 효과 구현
-    각 Gaussian은 위치, 크기, 회전, 투명도, 색상으로 정의됨
+    Each Gaussian is defined by position, scale, rotation, opacity, and color.
+    Supports both 2D canvas painting and 3D surface painting.
     """
 
     def __init__(
@@ -27,18 +28,18 @@ class Gaussian2D:
     ):
         """
         Args:
-            position: 3D position (x, y, z) - z는 0으로 고정됨
-            scale: Scale in 3 axes (sx, sy, sz) - sz는 최소값으로 설정
+            position: 3D position (x, y, z)
+            scale: Scale in 3 axes (sx, sy, sz)
             rotation: Quaternion (x, y, z, w) for orientation
             opacity: Opacity value [0, 1]
             color: RGB color [0, 1]
             sh_coeffs: Optional Spherical Harmonics coefficients
         """
-        # Position: z=0으로 강제
-        self.position = np.array([position[0], position[1], 0.0], dtype=np.float32)
+        # Position: full 3D
+        self.position = np.array(position, dtype=np.float32)
 
-        # Scale: z축은 매우 작게 (2D처럼 보이도록)
-        self.scale = np.array([scale[0], scale[1], 1e-4], dtype=np.float32)
+        # Scale: full 3D
+        self.scale = np.array(scale, dtype=np.float32)
 
         # Rotation: quaternion (x, y, z, w)
         self.rotation = np.array(rotation, dtype=np.float32)

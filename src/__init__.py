@@ -86,6 +86,7 @@ if not _is_actor_process:
     
     from . import preferences
     from . import operators
+    from . import tools
     from .viewport import viewport_renderer
     from .viewport import panels as viewport_panels
     from .viewport import benchmark as viewport_benchmark
@@ -135,6 +136,9 @@ if not _is_actor_process:
         viewport_panels.register_panels()
         viewport_benchmark.register_benchmark()
         
+        # Register painting tools (must be after operators)
+        tools.register_tools()
+        
         # Register local classes
         for cls in _classes:
             bpy.utils.register_class(cls)
@@ -156,6 +160,12 @@ if not _is_actor_process:
         try:
             from .generator_process import kill_generator
             kill_generator()
+        except:
+            pass
+        
+        # Unregister painting tools (must be before operators)
+        try:
+            tools.unregister_tools()
         except:
             pass
         

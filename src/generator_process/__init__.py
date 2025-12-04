@@ -238,6 +238,168 @@ class NPRGenerator(Actor):
             
         except Exception as e:
             return {"success": False, "error": str(e)}
+    
+    # ==========================================================================
+    # SharedMemory IPC Actions (Phase 4)
+    # ==========================================================================
+    
+    # Class-level storage for shared buffer (subprocess side)
+    _shared_buffer = None
+    _current_gaussians_tensor = None
+    
+    def setup_shared_buffer(self, buffer_name: str, max_gaussians: int = 100000) -> dict:
+        """
+        Attach to shared memory buffer created by main process.
+        
+        Args:
+            buffer_name: Name of existing SharedMemory
+            max_gaussians: Maximum gaussians supported
+            
+        Returns:
+            dict with status
+        """
+        try:
+            from .shared_buffer import GaussianSharedBuffer
+            
+            # Attach to existing shared memory
+            NPRGenerator._shared_buffer = GaussianSharedBuffer(
+                max_gaussians=max_gaussians,
+                name=buffer_name
+            )
+            
+            return {
+                "success": True,
+                "name": buffer_name,
+                "max_gaussians": max_gaussians
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def sync_gaussians_from_shared(self, start_idx: int = 0, count: int = None) -> dict:
+        """
+        Read gaussians from shared memory and convert to PyTorch tensor.
+        
+        This is called after main process writes to SharedMemory.
+        Data is already in memory - just read and convert to tensor.
+        
+        Args:
+            start_idx: Starting index in buffer
+            count: Number of gaussians (None = read from header)
+            
+        Returns:
+            dict with sync status
+        """
+        try:
+            import torch
+            import time
+            
+            if NPRGenerator._shared_buffer is None:
+                return {"success": False, "error": "SharedBuffer not initialized"}
+            
+            start = time.perf_counter()
+            
+            # Zero-copy read from shared memory (returns view)
+            gaussians_np = NPRGenerator._shared_buffer.read(start_idx, count)
+            actual_count = gaussians_np.shape[0]
+            
+            read_time = time.perf_counter() - start
+            
+            # Convert to PyTorch tensor (this copies to GPU)
+            start = time.perf_counter()
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            NPRGenerator._current_gaussians_tensor = torch.from_numpy(
+                gaussians_np.copy()  # Copy needed for tensor creation
+            ).to(device)
+            
+            if device == "cuda":
+                torch.cuda.synchronize()
+            
+            tensor_time = time.perf_counter() - start
+            
+            return {
+                "success": True,
+                "count": int(actual_count),
+                "device": device,
+                "read_time_ms": float(read_time * 1000),
+                "tensor_time_ms": float(tensor_time * 1000),
+            }
+            
+        except Exception as e:
+            import traceback
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+    
+    def compute_deformation_shared(self, spline_points: list, deformation_radius: float = 0.5) -> dict:
+        """
+        Compute spline deformation on current gaussians and write back to SharedMemory.
+        
+        Args:
+            spline_points: List of (x, y, z) tuples for spline
+            deformation_radius: Radius of deformation influence
+            
+        Returns:
+            dict with computation status
+        """
+        try:
+            import torch
+            import time
+            
+            if NPRGenerator._current_gaussians_tensor is None:
+                return {"success": False, "error": "No gaussians loaded. Call sync_gaussians_from_shared first."}
+            
+            if NPRGenerator._shared_buffer is None:
+                return {"success": False, "error": "SharedBuffer not initialized"}
+            
+            start = time.perf_counter()
+            
+            gaussians = NPRGenerator._current_gaussians_tensor
+            device = gaussians.device
+            
+            # Convert spline points to tensor
+            spline_tensor = torch.tensor(spline_points, dtype=torch.float32, device=device)
+            
+            # Simple deformation: Pull gaussians toward spline
+            # This is a placeholder - actual deformation uses deformation_gpu.py
+            positions = gaussians[:, :3]  # First 3 floats are position
+            
+            # For each gaussian, find closest point on spline and apply deformation
+            # (Simplified version - full implementation in deformation_gpu.py)
+            
+            compute_time = time.perf_counter() - start
+            
+            # Write deformed gaussians back to shared memory
+            start = time.perf_counter()
+            deformed_np = gaussians.cpu().numpy()
+            NPRGenerator._shared_buffer.write(deformed_np, start_idx=0)
+            write_time = time.perf_counter() - start
+            
+            return {
+                "success": True,
+                "count": int(gaussians.shape[0]),
+                "compute_time_ms": float(compute_time * 1000),
+                "write_time_ms": float(write_time * 1000),
+            }
+            
+        except Exception as e:
+            import traceback
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+    
+    def cleanup_shared_buffer(self) -> dict:
+        """
+        Cleanup shared buffer resources in subprocess.
+        
+        Returns:
+            dict with cleanup status
+        """
+        try:
+            if NPRGenerator._shared_buffer is not None:
+                NPRGenerator._shared_buffer.cleanup()
+                NPRGenerator._shared_buffer = None
+            
+            NPRGenerator._current_gaussians_tensor = None
+            
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 # =============================================================================

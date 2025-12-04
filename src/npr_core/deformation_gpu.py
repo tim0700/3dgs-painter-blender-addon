@@ -287,131 +287,6 @@ def batch_evaluate_spline_frames(
         return tangents, normals, binormals
 
 
-def deform_stamp_along_spline_gpu(
-    stamp_gaussians: List[Gaussian2D],
-    stamp_center: np.ndarray,
-    stamp_frame: Tuple[np.ndarray, np.ndarray, np.ndarray],
-    spline: StrokeSpline,
-    arc_length_param: float,
-    device: str = 'cuda',
-    chunk_size: int = 10000
-) -> List[Gaussian2D]:
-    """
-    GPU-accelerated deformation of stamp along spline
-
-    Achieves 50-100× speedup by batching all operations on GPU
-    Supports chunking for large brushes (1000+ Gaussians)
-
-    Args:
-        stamp_gaussians: List of Gaussians in stamp
-        stamp_center: Stamp center position
-        stamp_frame: (tangent, normal, binormal) of stamp
-        spline: Stroke spline
-        arc_length_param: Arc length where stamp is placed
-        device: 'cuda' or 'cpu'
-        chunk_size: Maximum Gaussians per GPU batch (for memory management)
-
-    Returns:
-        List of deformed Gaussians
-    """
-    if len(stamp_gaussians) == 0:
-        return []
-
-    n = len(stamp_gaussians)
-    dev = torch.device(device)
-
-    # 1. Batch collect data from Gaussians (CPU)
-    positions = np.array([g.position for g in stamp_gaussians], dtype=np.float32)  # [N, 3]
-    scales = np.array([g.scale for g in stamp_gaussians], dtype=np.float32)  # [N, 3]
-    rotations = np.array([g.rotation for g in stamp_gaussians], dtype=np.float32)  # [N, 4]
-    opacities = np.array([g.opacity for g in stamp_gaussians], dtype=np.float32)  # [N]
-    colors = np.array([g.color for g in stamp_gaussians], dtype=np.float32)  # [N, 3]
-    sh_coeffs = [g.sh_coeffs for g in stamp_gaussians]  # Keep on CPU
-
-    # Process in chunks if needed (for very large brushes)
-    if n > chunk_size:
-        logger.info(f"[DeformGPU] Processing {n} Gaussians in chunks of {chunk_size}")
-        deformed = []
-        for i in range(0, n, chunk_size):
-            end = min(i + chunk_size, n)
-            chunk_gaussians = stamp_gaussians[i:end]
-            chunk_deformed = deform_stamp_along_spline_gpu(
-                chunk_gaussians, stamp_center, stamp_frame, spline,
-                arc_length_param, device, chunk_size
-            )
-            deformed.extend(chunk_deformed)
-        return deformed
-
-    # 2. Transfer to GPU (single batch)
-    pos_gpu = torch.from_numpy(positions).to(dev, dtype=torch.float32)
-    rot_gpu = torch.from_numpy(rotations).to(dev, dtype=torch.float32)
-
-    # 3. Brush frame on GPU
-    t_B, n_B, b_B = stamp_frame
-    stamp_center_gpu = torch.from_numpy(stamp_center).to(dev, dtype=torch.float32)
-    t_B_gpu = torch.from_numpy(t_B).to(dev, dtype=torch.float32)
-    n_B_gpu = torch.from_numpy(n_B).to(dev, dtype=torch.float32)
-    b_B_gpu = torch.from_numpy(b_B).to(dev, dtype=torch.float32)
-
-    # 4. Batch compute local coordinates (vectorized)
-    local_pos = pos_gpu - stamp_center_gpu  # [N, 3]
-
-    # 5. Project onto brush axes (vectorized dot products)
-    x_offsets = torch.sum(local_pos * t_B_gpu, dim=1)  # [N] tangential offsets
-    y_offsets = torch.sum(local_pos * b_B_gpu, dim=1)  # [N] binormal offsets
-    z_offsets = torch.sum(local_pos * n_B_gpu, dim=1)  # [N] normal offsets
-
-    # 6. Compute new arc lengths (vectorized)
-    arc_lengths_new = arc_length_param + x_offsets  # [N]
-    arc_lengths_new = torch.clamp(arc_lengths_new, 0.0, spline.total_arc_length)
-
-    # 7. Batch evaluate spline
-    pos_on_spline = batch_evaluate_spline_positions(spline, arc_lengths_new, dev)  # [N, 3]
-    t_s, n_s, b_s = batch_evaluate_spline_frames(spline, arc_lengths_new, dev)  # Each [N, 3]
-
-    # 8. Compute new positions (vectorized)
-    new_pos = (pos_on_spline +
-               y_offsets.unsqueeze(1) * b_s +
-               z_offsets.unsqueeze(1) * n_s)  # [N, 3]
-
-    # 9. Batch compute rotation matrices
-    # Create from_frames and to_frames as batches
-    from_frames = torch.stack([
-        t_B_gpu.expand(n, 3),
-        n_B_gpu.expand(n, 3),
-        b_B_gpu.expand(n, 3)
-    ], dim=2)  # [N, 3, 3] (column vectors)
-
-    to_frames = torch.stack([t_s, n_s, b_s], dim=2)  # [N, 3, 3]
-
-    # R = to @ from^T (batched matrix multiply)
-    R_batch = torch.bmm(to_frames, from_frames.transpose(1, 2))  # [N, 3, 3]
-
-    # 10. Apply rotations to quaternions (batch)
-    R_q = batch_quaternions_to_matrices(rot_gpu)  # [N, 3, 3]
-    R_new = torch.bmm(R_batch, R_q)  # [N, 3, 3] combined rotation
-    new_rot = batch_matrices_to_quaternions(R_new)  # [N, 4]
-
-    # 11. Transfer results back to CPU
-    new_pos_cpu = new_pos.cpu().numpy()
-    new_rot_cpu = new_rot.cpu().numpy()
-
-    # 12. Create new Gaussians (CPU)
-    deformed = []
-    for i in range(n):
-        g = Gaussian2D(
-            position=new_pos_cpu[i],
-            scale=scales[i],
-            rotation=new_rot_cpu[i],
-            opacity=opacities[i],
-            color=colors[i].copy(),
-            sh_coeffs=sh_coeffs[i].copy() if sh_coeffs[i] is not None else None
-        )
-        deformed.append(g)
-
-    return deformed
-
-
 def deform_all_stamps_batch_gpu(
     all_stamps: List[List[Gaussian2D]],
     stamp_center: np.ndarray,
@@ -515,12 +390,13 @@ def deform_all_stamps_batch_gpu(
                             z_offsets[deform_mask].unsqueeze(1) * n_s_masked)
 
             # Compute rotations for masked Gaussians
+            # Column order: [tangent, binormal, normal] to match brush.py
             from_frames_masked = torch.stack([
                 t_B_gpu.expand(n_deform, 3),
-                n_B_gpu.expand(n_deform, 3),
-                b_B_gpu.expand(n_deform, 3)
+                b_B_gpu.expand(n_deform, 3),
+                n_B_gpu.expand(n_deform, 3)
             ], dim=2)
-            to_frames_masked = torch.stack([t_s_masked, n_s_masked, b_s_masked], dim=2)
+            to_frames_masked = torch.stack([t_s_masked, b_s_masked, n_s_masked], dim=2)
             R_batch_masked = torch.bmm(to_frames_masked, from_frames_masked.transpose(1, 2))
             R_q_masked = batch_quaternions_to_matrices(rot_gpu[deform_mask])
             R_new_masked = torch.bmm(R_batch_masked, R_q_masked)
@@ -543,12 +419,13 @@ def deform_all_stamps_batch_gpu(
         # Compute new positions and rotations
         new_pos = pos_on_spline + y_offsets.unsqueeze(1) * b_s + z_offsets.unsqueeze(1) * n_s
 
+        # Column order: [tangent, binormal, normal] to match brush.py
         from_frames = torch.stack([
             t_B_gpu.expand(n_total, 3),
-            n_B_gpu.expand(n_total, 3),
-            b_B_gpu.expand(n_total, 3)
+            b_B_gpu.expand(n_total, 3),
+            n_B_gpu.expand(n_total, 3)
         ], dim=2)
-        to_frames = torch.stack([t_s, n_s, b_s], dim=2)
+        to_frames = torch.stack([t_s, b_s, n_s], dim=2)
         R_batch = torch.bmm(to_frames, from_frames.transpose(1, 2))
         R_q = batch_quaternions_to_matrices(rot_gpu)
         R_new = torch.bmm(R_batch, R_q)

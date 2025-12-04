@@ -23,6 +23,12 @@
 | **SceneData**     | `npr_core/scene_data.py`      | ✅ 완전 구현 | Array-based storage (40-80× faster)       |
 | **Deformation**   | `npr_core/deformation_gpu.py` | ✅ 완전 구현 | `deform_all_stamps_batch_gpu()`           |
 
+**최근 수정사항 (2025-12-04)**:
+
+-   `force_2d` 코드 완전 제거 → 3D 표면 페인팅 지원
+-   `StrokeSpline`: 3D 스플라인으로 동작 (z=0 fallback 제거)
+-   미사용 테스트 코드 제거 (~320 lines)
+
 ---
 
 ## 📋 작업 개요
@@ -39,7 +45,7 @@ User Input → Spline Construction → Arc-Length Sampling → Stamp Placement �
 | Arc-length 균일 배치  | ✅ 구현됨 | `StrokeSpline` 활용    |
 | 2계층 브러시 아키텍처 | ✅ 구현됨 | `BrushStamp` 활용      |
 | GPU 배치 변형         | ✅ 구현됨 | `deformation_gpu` 활용 |
-| **블렌더 3D 통합**    | ⚡ 신규   | Phase 4 IPC 연동       |
+| **블렌더 3D 통합**    | ✅ 구현됨 | Raycasting + 3D spline |
 
 ---
 
@@ -77,7 +83,7 @@ arrays = brush.place_at_batch_arrays(positions, normals)   # 10+개, 40-80× 빠
 Arc-length 파라미터화된 Cubic spline:
 
 ```python
-spline = StrokeSpline(force_2d=False)  # 3D 모드
+spline = StrokeSpline()  # 3D spline
 spline.add_point(position, normal, threshold=0.01)
 
 pos = spline.evaluate_at_arc_length(arc_length)
@@ -103,7 +109,7 @@ deform_all_stamps_batch_gpu(
 
 ### 5.1 3D 좌표계 적응
 
--   `StrokeSpline`: `force_2d=False` 사용
+-   `StrokeSpline`: 3D spline 사용
 -   Surface normal: Phase 4 Raycasting에서 얻은 실제 법선 사용
 
 ### 5.2 Viewport 동기화

@@ -9,7 +9,6 @@ import numpy as np
 from typing import List, Optional, Tuple
 from .gaussian import Gaussian2D
 from .spline import StrokeSpline
-from .deformation import apply_deformation_to_stroke
 from .inpainting import blend_overlapping_stamps
 import copy
 
@@ -584,18 +583,19 @@ class StrokePainter:
         Args:
             position: 3D starting position
             normal: Surface normal
-            enable_deformation: Enable deformation for this stroke (if None, uses config)
+            enable_deformation: Enable deformation for this stroke (if None, defaults to False)
         """
         # Determine and store deformation flag for this stroke
         # This ensures consistency between stamp placement and finish_stroke
         if enable_deformation is None:
-            from backend.config import config
-            enable_deformation = config.ENABLE_DEFORMATION
+            # Default to False for Blender addon (no config module)
+            enable_deformation = False
 
         self.enable_deformation_for_current_stroke = enable_deformation
 
-        # Create spline with 2D constraint for canvas painting
-        self.current_stroke = StrokeSpline(force_2d=True)
+        # Create spline - use 3D for surface painting, 2D for canvas painting
+        # For Blender addon, we always want 3D surface painting
+        self.current_stroke = StrokeSpline()
         self.current_stroke.add_point(position, normal, threshold=0.0)
         self.placed_stamps = []
         self.stamp_placements = []
@@ -627,8 +627,6 @@ class StrokePainter:
         """Place stamps from last_stamp_arc_length to current end (batch-optimized)"""
         if self.current_stroke is None:
             return
-
-        from backend.config import config
 
         total_length = self.current_stroke.total_arc_length
         spacing = self.brush.spacing
@@ -733,6 +731,9 @@ class StrokePainter:
         if self.current_stroke is None:
             return
 
+        # Initialize deformed_stamps for later use
+        deformed_stamps = []
+
         # Phase 3-2: Apply non-rigid deformation
         if enable_deformation and len(self.placed_stamps) > 0:
             print(f"[Deformation] Applying deformation to {len(self.placed_stamps)} stamps")
@@ -742,8 +743,6 @@ class StrokePainter:
 
             # Apply deformation using original brush coordinates and placement info
             stamp_frame = (self.brush.tangent, self.brush.normal, self.brush.binormal)
-
-            deformed_stamps = []
 
             # Use stamp_placements for deformation if available (when ENABLE_DEFORMATION was true during placement)
             if len(self.stamp_placements) > 0:
@@ -822,22 +821,23 @@ class StrokePainter:
             mode_str = "global" if global_inpainting else "consecutive"
             print(f"[Inpainting] Applying {mode_str} inpainting to {len(self.placed_stamps)} stamps (strength={blend_strength:.2f})")
 
-            from backend.config import config
             from .inpainting import blend_overlapping_stamps_auto
-            overlap_threshold = config.INPAINT_OVERLAP_THRESHOLD
-            use_anisotropic = config.INPAINT_ANISOTROPIC if hasattr(config, 'INPAINT_ANISOTROPIC') else False
+            
+            # Default inpainting parameters (config module may not be available)
+            overlap_threshold = 0.3
+            _use_anisotropic = use_anisotropic  # Use parameter value
 
             if enable_deformation and len(deformed_stamps) > 0:
                 # Deformation was applied - blend deformed_stamps before adding to scene
-                print(f"[Inpainting] Blending deformed stamps (mode={blend_mode}, color={color_blending}, anisotropic={use_anisotropic})")
+                print(f"[Inpainting] Blending deformed stamps (mode={blend_mode}, color={color_blending}, anisotropic={_use_anisotropic})")
                 blend_overlapping_stamps_auto(deformed_stamps, overlap_threshold, blend_strength,
-                                            global_inpainting, blend_mode, color_blending, use_anisotropic)
+                                            global_inpainting, blend_mode, color_blending, _use_anisotropic)
                 stamps_to_add = deformed_stamps
             else:
                 # No deformation - blend the placed_stamps directly
                 stamps_only = [gaussians for gaussians, _ in self.placed_stamps]
                 blend_overlapping_stamps_auto(stamps_only, overlap_threshold, blend_strength,
-                                            global_inpainting, blend_mode, color_blending, use_anisotropic)
+                                            global_inpainting, blend_mode, color_blending, _use_anisotropic)
                 stamps_to_add = stamps_only
 
             print(f"[Inpainting] ✓ Inpainting applied")
@@ -878,32 +878,3 @@ class StrokePainter:
         """Clear all scene Gaussians"""
         self.scene.clear()
         self.placed_stamps = []
-
-
-def test_brush():
-    """Test brush functionality"""
-    # Create circular brush
-    brush = BrushStamp()
-    brush.create_circular_pattern(num_gaussians=20, radius=0.3)
-    print(f"Created brush: {brush}")
-
-    # Test placement
-    position = np.array([0.0, 0.0, 0.0])
-    tangent = np.array([1.0, 0.0, 0.0])
-    normal = np.array([0.0, 0.0, 1.0])
-
-    placed = brush.place_at(position, tangent, normal)
-    print(f"Placed {len(placed)} Gaussians")
-
-    # Test painter
-    painter = StrokePainter(brush)
-    painter.start_stroke(np.array([0.0, 0.0, 0.0]), np.array([0, 0, 1]))
-    painter.update_stroke(np.array([0.5, 0.2, 0.0]), np.array([0, 0, 1]))
-    painter.update_stroke(np.array([1.0, 0.1, 0.0]), np.array([0, 0, 1]))
-    painter.finish_stroke()
-
-    print(f"Total scene Gaussians: {len(painter.scene)}")
-
-
-if __name__ == "__main__":
-    test_brush()

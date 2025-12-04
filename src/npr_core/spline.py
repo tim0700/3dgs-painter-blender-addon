@@ -24,15 +24,11 @@ class StrokeSpline:
     - Smooth interpolation of input points
     - Arc-length parameterization for uniform stamp spacing
     - Tangent and curvature computation for deformation
-    - Optional 2D constraint for canvas painting
     """
 
-    def __init__(self, force_2d: bool = True):
+    def __init__(self):
         """
         Initialize empty spline
-
-        Args:
-            force_2d: If True, constrain spline to XY plane (Z=0) with upward normal
         """
         self.control_points: List[np.ndarray] = []  # 3D points
         self.normals: List[np.ndarray] = []  # Surface normals at each point
@@ -42,7 +38,6 @@ class StrokeSpline:
         self.spline_z: Optional[object] = None  # Parametric spline (t -> z)
         self.arc_lengths: Optional[np.ndarray] = None
         self.total_arc_length: float = 0.0
-        self.force_2d: bool = force_2d  # 2D painting mode
         self.control_point_arc_lengths: Optional[np.ndarray] = (
             None  # Arc lengths at control points
         )
@@ -54,29 +49,20 @@ class StrokeSpline:
         Add a point to the spline
 
         Args:
-            point: 3D position (x, y, z) - will be constrained to 2D if force_2d=True
-            normal: Surface normal at this point - will be forced to [0,0,1] if force_2d=True
+            point: 3D position (x, y, z)
+            normal: Surface normal at this point
             threshold: Minimum distance from previous point
 
         Returns:
             True if point was added, False if too close to previous
         """
-        # Apply 2D constraints if enabled
-        if self.force_2d:
-            point = np.array(point, dtype=np.float32)
-            point[2] = 0.0  # Force Z=0 (XY plane)
-            normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)  # Force upward normal
-
         if len(self.control_points) == 0:
             self.control_points.append(np.array(point, dtype=np.float32))
             self.normals.append(np.array(normal, dtype=np.float32))
             return True
 
-        # Check distance threshold (use 2D distance if force_2d)
-        if self.force_2d:
-            distance = np.linalg.norm(point[:2] - self.control_points[-1][:2])
-        else:
-            distance = np.linalg.norm(point - self.control_points[-1])
+        # Check distance threshold
+        distance = np.linalg.norm(point - self.control_points[-1])
 
         if distance < threshold:
             return False
@@ -514,36 +500,3 @@ class StrokeSpline:
             f"StrokeSpline(points={len(self.control_points)}, "
             f"length={self.total_arc_length:.3f})"
         )
-
-
-def test_spline():
-    """Test spline functionality"""
-    spline = StrokeSpline()
-
-    # Add some test points
-    points = [
-        np.array([0.0, 0.0, 0.0]),
-        np.array([0.3, 0.2, 0.0]),
-        np.array([0.6, 0.1, 0.0]),
-        np.array([1.0, 0.3, 0.0]),
-    ]
-
-    normal = np.array([0, 0, 1])
-
-    for p in points:
-        spline.add_point(p, normal, threshold=0.0)
-
-    print(f"Spline: {spline}")
-    print(f"Total arc length: {spline.total_arc_length:.4f}")
-
-    # Sample
-    samples = spline.sample_by_arc_length(spacing=0.1)
-    print(f"Number of samples with spacing 0.1: {len(samples)}")
-
-    # Test evaluation
-    for i, (pos, tangent, normal) in enumerate(samples[:3]):
-        print(f"Sample {i}: pos={pos}, tangent={tangent}")
-
-
-if __name__ == "__main__":
-    test_spline()

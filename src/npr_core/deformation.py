@@ -27,12 +27,13 @@ def compute_rotation_matrix_from_frames(
         3x3 rotation matrix
     """
     # Build source matrix (column vectors)
+    # Column order: [tangent, binormal, normal] to match brush.py
     t_from, n_from, b_from = from_frame
-    R_from = np.column_stack([t_from, n_from, b_from])
+    R_from = np.column_stack([t_from, b_from, n_from])
 
     # Build target matrix
     t_to, n_to, b_to = to_frame
-    R_to = np.column_stack([t_to, n_to, b_to])
+    R_to = np.column_stack([t_to, b_to, n_to])
 
     # Rotation: R = R_to @ R_from^T
     R = R_to @ R_from.T
@@ -223,92 +224,3 @@ def matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
         z = 0.25 * s
 
     return np.array([x, y, z, w], dtype=np.float32)
-
-
-def apply_deformation_to_stroke(
-    placed_stamps: List[List[Gaussian2D]],
-    stamp_center: np.ndarray,
-    stamp_frame: Tuple[np.ndarray, np.ndarray, np.ndarray],
-    spline: StrokeSpline,
-    spacing: float
-) -> List[List[Gaussian2D]]:
-    """
-    Apply deformation to all stamps in a stroke
-
-    Args:
-        placed_stamps: List of stamp Gaussian lists
-        stamp_center: Stamp center
-        stamp_frame: Stamp orientation frame
-        spline: Stroke spline
-        spacing: Stamp spacing
-
-    Returns:
-        List of deformed stamp Gaussian lists
-    """
-    deformed_stamps = []
-
-    for i, stamp in enumerate(placed_stamps):
-        arc_length = i * spacing
-
-        deformed = deform_stamp_along_spline(
-            stamp,
-            stamp_center,
-            stamp_frame,
-            spline,
-            arc_length
-        )
-
-        deformed_stamps.append(deformed)
-
-    return deformed_stamps
-
-
-def test_deformation():
-    """Test deformation functions"""
-    from .brush import BrushStamp
-    from .spline import StrokeSpline
-
-    print("Testing deformation...")
-
-    # Create brush
-    brush = BrushStamp()
-    brush.create_circular_pattern(num_gaussians=10)
-
-    # Create spline
-    spline = StrokeSpline()
-    spline.add_point(np.array([0, 0, 0]), np.array([0, 0, 1]), threshold=0.0)
-    spline.add_point(np.array([0.5, 0.5, 0]), np.array([0, 0, 1]), threshold=0.0)
-    spline.add_point(np.array([1, 0, 0]), np.array([0, 0, 1]), threshold=0.0)
-
-    print(f"Spline: {spline}")
-
-    # Place stamp at start
-    stamp_frame = (brush.tangent, brush.normal, brush.binormal)
-    stamp = brush.place_at(
-        np.array([0, 0, 0]),
-        brush.tangent,
-        brush.normal
-    )
-
-    print(f"Original stamp: {len(stamp)} Gaussians")
-
-    # Deform
-    deformed = deform_stamp_along_spline(
-        stamp,
-        brush.center,
-        stamp_frame,
-        spline,
-        arc_length_param=0.0
-    )
-
-    print(f"Deformed stamp: {len(deformed)} Gaussians")
-
-    # Check positions changed
-    for i, (g_orig, g_def) in enumerate(zip(stamp, deformed)):
-        dist = np.linalg.norm(g_def.position - g_orig.position)
-        if i < 3:
-            print(f"  Gaussian {i}: moved {dist:.4f}")
-
-
-if __name__ == "__main__":
-    test_deformation()
