@@ -277,6 +277,15 @@ class THREEGDS_OT_VREngineTest(bpy.types.Operator):
         # Switch to VR Gaussian engine
         context.scene.render.engine = 'VR_GAUSSIAN'
         
+        # Switch viewport to RENDERED mode (required for view_draw to be called!)
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        space.shading.type = 'RENDERED'
+                        print(f"[VR Gaussian Engine] Set viewport to RENDERED mode")
+                        break
+        
         self.report({'INFO'}, f"VR Engine test: {VRGaussianRenderEngine.get_stats()}")
         self.report({'WARNING'}, "Now start VR session and check console for 'CALLED IN VR' messages!")
         return {'FINISHED'}
