@@ -32,7 +32,7 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
     bl_idname = "VR_GAUSSIAN"
     bl_label = "VR Gaussian"
     bl_use_preview = False
-    bl_use_eevee_viewport = True  # Use Eevee as base for scene rendering
+    # NOTE: bl_use_eevee_viewport was removed - it prevents view_draw from being called!
     
     # Class-level data storage
     _gaussian_positions: List[Vector] = []
@@ -58,7 +58,7 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
         """
         Called when viewport needs update (scene changed).
         """
-        pass
+        print(f"[VR Gaussian Engine] view_update called")
     
     def view_draw(self, context, depsgraph):
         """
@@ -78,11 +78,17 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
             if VRGaussianRenderEngine._call_count % 60 == 0:  # Print every 60 frames
                 print(f"[VR Gaussian Engine] view_draw called (PC viewport, count: {VRGaussianRenderEngine._call_count})")
         
-        # Draw scene first (use Eevee)
-        self._draw_scene(context, depsgraph)
+        # Clear viewport with gray color so we know it's working
+        gpu.state.blend_set('ALPHA')
+        
+        # Draw a simple background to confirm rendering works
+        self._draw_background()
         
         # Draw Gaussians on top
         self._draw_gaussians(context)
+        
+        # Reset state
+        gpu.state.blend_set('NONE')
     
     def _is_vr_context(self, context) -> bool:
         """Check if we're rendering for VR headset."""
@@ -102,11 +108,23 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
         
         return False
     
-    def _draw_scene(self, context, depsgraph):
-        """Draw the base scene (delegate to Eevee)."""
-        # For now, just clear - proper scene drawing requires more work
-        # In a real implementation, you'd composite with Eevee output
-        pass
+    def _draw_background(self):
+        """Draw a simple background to confirm rendering is working."""
+        try:
+            # Use built-in shader for simple drawing
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            
+            # Draw full-screen quad with dark gray
+            vertices = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
+            indices = [(0, 1, 2), (2, 1, 3)]
+            
+            batch = batch_for_shader(shader, 'TRIS', {"pos": vertices}, indices=indices)
+            shader.bind()
+            shader.uniform_float("color", (0.2, 0.2, 0.3, 1.0))  # Dark blue-gray
+            batch.draw(shader)
+            
+        except Exception as e:
+            print(f"[VR Gaussian Engine] Background draw error: {e}")
     
     def _draw_gaussians(self, context):
         """Draw Gaussian splats."""
