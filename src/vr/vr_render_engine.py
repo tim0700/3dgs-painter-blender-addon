@@ -42,7 +42,8 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
     _call_count: int = 0
     _vr_call_count: int = 0
     
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        # Blender 5.0 passes additional arguments to RenderEngine.__init__
         super().__init__()
         print(f"[VR Gaussian Engine] Instance created")
     
