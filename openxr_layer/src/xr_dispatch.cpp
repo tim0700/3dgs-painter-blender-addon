@@ -15,6 +15,7 @@
 #include "gaussian_data.h"
 
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <cstdarg>
 
@@ -33,12 +34,26 @@ LayerState& GetLayerState() {
 // ============================================
 // Logging
 // ============================================
+static std::ofstream g_dispatchLog;
+
 static void LogXr(const char* format, ...) {
     char buffer[512];
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
+    
+    // Write to log file
+    if (!g_dispatchLog.is_open()) {
+        char path[MAX_PATH];
+        GetTempPathA(MAX_PATH, path);
+        std::string logPath = std::string(path) + "gaussian_layer.log";
+        g_dispatchLog.open(logPath, std::ios::app);
+    }
+    if (g_dispatchLog.is_open()) {
+        g_dispatchLog << "[GaussianXR] " << buffer << std::endl;
+        g_dispatchLog.flush();
+    }
     
     OutputDebugStringA("[GaussianXR] ");
     OutputDebugStringA(buffer);
