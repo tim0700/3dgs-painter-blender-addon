@@ -1,17 +1,19 @@
 #pragma once
 
-#define XR_USE_PLATFORM_WIN32
-#define XR_USE_GRAPHICS_API_D3D11
+// PHASE 1: Pure OpenXR without platform-specific headers
+// Manually define types to avoid openxr_platform.h
 
 #include <openxr/openxr.h>
-#include <openxr/openxr_platform.h>
 
-#include <functional>
-#include <unordered_map>
-#include <string>
-#include <mutex>
+#include <cstdint>
 
 namespace gaussian {
+
+// ============================================
+// Forward declare types from loader_negotiation.h
+// (to avoid openxr_platform.h being pulled in)
+// ============================================
+typedef XrResult(XRAPI_PTR* PFN_xrGetInstanceProcAddrFP)(XrInstance instance, const char* name, PFN_xrVoidFunction* function);
 
 // ============================================
 // Function Pointer Types
@@ -31,7 +33,7 @@ struct LayerState {
     PFN_xrEndFrame next_xrEndFrame = nullptr;
     PFN_xrBeginFrame next_xrBeginFrame = nullptr;
     PFN_xrWaitFrame next_xrWaitFrame = nullptr;
-    PFN_xrGetInstanceProcAddr next_xrGetInstanceProcAddr = nullptr;
+    PFN_xrGetInstanceProcAddrFP next_xrGetInstanceProcAddr = nullptr;
     
     // Frame timing
     XrTime predicted_display_time = 0;
@@ -66,7 +68,7 @@ XrResult XRAPI_CALL gaussian_xrWaitFrame(
 // ============================================
 // Initialization
 // ============================================
-bool InitializeDispatch(XrInstance instance, PFN_xrGetInstanceProcAddr getProcAddr);
+bool InitializeDispatch(XrInstance instance, PFN_xrGetInstanceProcAddrFP getProcAddr);
 void ShutdownDispatch();
 
 }  // namespace gaussian

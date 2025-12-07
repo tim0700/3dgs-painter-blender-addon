@@ -1,13 +1,8 @@
 /**
- * GPU Context Management
- * 
- * D3D11 device and context for VR rendering.
- * Phase 3 implementation.
+ * GPU Context (STUB)
+ * Phase 1: Empty - will be implemented in Phase 3
  */
 
 namespace gaussian {
-
-// Placeholder for Phase 3
-// TODO: D3D11 device/context initialization
-
-}  // namespace gaussian
+// TODO: D3D11 context
+}

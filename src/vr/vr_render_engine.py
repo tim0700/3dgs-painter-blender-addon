@@ -42,10 +42,7 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
     _call_count: int = 0
     _vr_call_count: int = 0
     
-    def __init__(self, *args, **kwargs):
-        # Blender 5.0 passes additional arguments to RenderEngine.__init__
-        super().__init__()
-        print(f"[VR Gaussian Engine] Instance created")
+    # NOTE: __init__ removed - Blender 5.0 RenderEngine handles initialization internally
     
     # ========================================
     # Required RenderEngine methods
@@ -128,7 +125,7 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
             print(f"[VR Gaussian Engine] Background draw error: {e}")
     
     def _draw_gaussians(self, context):
-        """Draw Gaussian splats."""
+        """Draw Gaussian splats using built-in shader."""
         if not VRGaussianRenderEngine._gaussian_positions:
             return
         
@@ -140,33 +137,34 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
             return
         
         try:
-            # Get matrices
-            view_matrix = gpu.matrix.get_model_view_matrix()
-            proj_matrix = gpu.matrix.get_projection_matrix()
-            view_proj = proj_matrix @ view_matrix
-            
-            # Build vertex data
+            # Build vertex data - built-in shader uses 'pos' and 'color'
             positions = [(p.x, p.y, p.z) for p in VRGaussianRenderEngine._gaussian_positions]
             colors = VRGaussianRenderEngine._gaussian_colors
             
-            # Create batch
+            # Create batch with built-in shader attribute names
             batch = batch_for_shader(
                 VRGaussianRenderEngine._shader,
                 'POINTS',
-                {"position": positions, "color": colors}
+                {"pos": positions, "color": colors}
             )
             
             # Set GPU state
             gpu.state.blend_set('ALPHA')
             gpu.state.depth_test_set('LESS_EQUAL')
-            gpu.state.point_size_set(10.0)
+            gpu.state.point_size_set(15.0)
             
-            # Draw
-            VRGaussianRenderEngine._shader.bind()
-            VRGaussianRenderEngine._shader.uniform_float("viewProjectionMatrix", view_proj)
-            VRGaussianRenderEngine._shader.uniform_float("pointSize", 20.0)
-            
-            batch.draw(VRGaussianRenderEngine._shader)
+            # Draw with proper matrix setup
+            with gpu.matrix.push_pop():
+                # Get current matrices from context
+                region = context.region
+                rv3d = context.region_data
+                
+                if rv3d:
+                    gpu.matrix.load_matrix(rv3d.view_matrix)
+                    gpu.matrix.load_projection_matrix(rv3d.window_matrix)
+                
+                VRGaussianRenderEngine._shader.bind()
+                batch.draw(VRGaussianRenderEngine._shader)
             
             # Reset state
             gpu.state.blend_set('NONE')
@@ -175,39 +173,11 @@ class VRGaussianRenderEngine(bpy.types.RenderEngine):
             print(f"[VR Gaussian Engine] Draw error: {e}")
     
     def _compile_shader(self):
-        """Compile simple point shader."""
-        vert_src = """
-        uniform mat4 viewProjectionMatrix;
-        uniform float pointSize;
-        
-        in vec3 position;
-        in vec4 color;
-        
-        out vec4 vColor;
-        
-        void main() {
-            gl_Position = viewProjectionMatrix * vec4(position, 1.0);
-            gl_PointSize = pointSize / max(gl_Position.w, 0.1) * 50.0;
-            vColor = color;
-        }
-        """
-        
-        frag_src = """
-        in vec4 vColor;
-        out vec4 fragColor;
-        
-        void main() {
-            vec2 coord = gl_PointCoord * 2.0 - 1.0;
-            float dist = length(coord);
-            if (dist > 1.0) discard;
-            float alpha = smoothstep(1.0, 0.3, dist) * vColor.a;
-            fragColor = vec4(vColor.rgb, alpha);
-        }
-        """
-        
+        """Use built-in shader for Blender 5.0 compatibility."""
         try:
-            VRGaussianRenderEngine._shader = gpu.types.GPUShader(vert_src, frag_src)
-            print("[VR Gaussian Engine] Shader compiled")
+            # Blender 5.0: Use built-in shader instead of custom
+            VRGaussianRenderEngine._shader = gpu.shader.from_builtin('SMOOTH_COLOR')
+            print("[VR Gaussian Engine] Shader compiled (built-in SMOOTH_COLOR)")
         except Exception as e:
             print(f"[VR Gaussian Engine] Shader error: {e}")
     

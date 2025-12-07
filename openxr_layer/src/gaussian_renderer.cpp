@@ -1,15 +1,8 @@
 /**
- * Gaussian Renderer
- * 
- * GPU-based Gaussian splatting renderer for VR.
- * Phase 3 implementation.
+ * Gaussian Renderer (STUB)
+ * Phase 1: Empty - will be implemented in Phase 3
  */
 
-#include "gaussian_data.h"
-
 namespace gaussian {
-
-// Placeholder for Phase 3
-// TODO: Implement GPU rendering pipeline
-
-}  // namespace gaussian
+// TODO: GPU rendering
+}

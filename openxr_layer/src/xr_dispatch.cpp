@@ -1,17 +1,22 @@
 /**
- * OpenXR Function Dispatch
- * 
- * Implements the hooked OpenXR functions that intercept
- * calls from Blender and inject Gaussian rendering.
+ * OpenXR Function Dispatch (PHASE 1)
  */
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 
 #include "xr_dispatch.h"
 #include "shared_memory.h"
 #include "gaussian_data.h"
 
-#include <Windows.h>
 #include <iostream>
 #include <vector>
+#include <cstdarg>
 
 namespace gaussian {
 
@@ -26,7 +31,7 @@ LayerState& GetLayerState() {
 }
 
 // ============================================
-// Logging Helper
+// Logging
 // ============================================
 static void LogXr(const char* format, ...) {
     char buffer[512];
@@ -41,50 +46,48 @@ static void LogXr(const char* format, ...) {
 }
 
 // ============================================
-// Initialize Dispatch Table
+// Initialize Dispatch
 // ============================================
-bool InitializeDispatch(XrInstance instance, PFN_xrGetInstanceProcAddr getProcAddr) {
-    LogXr("Initializing dispatch table");
+bool InitializeDispatch(XrInstance instance, PFN_xrGetInstanceProcAddrFP getProcAddr) {
+    LogXr("Initializing dispatch");
     
     g_layerState.next_xrGetInstanceProcAddr = getProcAddr;
     
-    // Get original function pointers
     XrResult result;
     
     result = getProcAddr(instance, "xrEndFrame", 
         reinterpret_cast<PFN_xrVoidFunction*>(&g_layerState.next_xrEndFrame));
     if (XR_FAILED(result)) {
-        LogXr("ERROR: Failed to get xrEndFrame");
+        LogXr("Failed to get xrEndFrame");
         return false;
     }
     
     result = getProcAddr(instance, "xrBeginFrame",
         reinterpret_cast<PFN_xrVoidFunction*>(&g_layerState.next_xrBeginFrame));
     if (XR_FAILED(result)) {
-        LogXr("ERROR: Failed to get xrBeginFrame");
+        LogXr("Failed to get xrBeginFrame");
         return false;
     }
     
     result = getProcAddr(instance, "xrWaitFrame",
         reinterpret_cast<PFN_xrVoidFunction*>(&g_layerState.next_xrWaitFrame));
     if (XR_FAILED(result)) {
-        LogXr("ERROR: Failed to get xrWaitFrame");
+        LogXr("Failed to get xrWaitFrame");
         return false;
     }
     
-    // Initialize shared memory
     if (g_sharedMemory.Open()) {
-        LogXr("Shared memory opened successfully");
+        LogXr("Shared memory opened");
     } else {
-        LogXr("WARNING: Shared memory not available (Blender may not be running)");
+        LogXr("Shared memory not available");
     }
     
-    LogXr("Dispatch table initialized successfully");
+    LogXr("Dispatch initialized");
     return true;
 }
 
 void ShutdownDispatch() {
-    LogXr("Shutting down dispatch");
+    LogXr("Shutting down");
     g_sharedMemory.Close();
     g_layerState = LayerState{};
 }
@@ -97,7 +100,6 @@ XrResult XRAPI_CALL gaussian_xrWaitFrame(
     const XrFrameWaitInfo* frameWaitInfo,
     XrFrameState* frameState)
 {
-    // Call original
     XrResult result = g_layerState.next_xrWaitFrame(session, frameWaitInfo, frameState);
     
     if (XR_SUCCEEDED(result)) {
@@ -121,7 +123,7 @@ XrResult XRAPI_CALL gaussian_xrBeginFrame(
 }
 
 // ============================================
-// xrEndFrame Hook - MAIN GAUSSIAN INJECTION POINT
+// xrEndFrame Hook - MAIN INJECTION POINT
 // ============================================
 XrResult XRAPI_CALL gaussian_xrEndFrame(
     XrSession session,
@@ -131,58 +133,26 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
     
     // Log every 60 frames
     if (g_layerState.frame_count % 60 == 0) {
-        LogXr("Frame %llu - Layers submitted: %d", 
+        LogXr("Frame %llu, layers: %d", 
             g_layerState.frame_count, 
             frameEndInfo->layerCount);
     }
     
-    // Try to read Gaussian data from shared memory
+    // Check shared memory
     if (!g_sharedMemory.IsOpen()) {
         g_sharedMemory.Open();
     }
     
-    bool hasGaussianData = false;
     if (g_sharedMemory.IsOpen()) {
         auto header = g_sharedMemory.ReadHeader();
         if (header.has_value() && header->gaussian_count > 0) {
-            hasGaussianData = true;
-            
-            // Log occasionally
             if (g_layerState.frame_count % 120 == 0) {
-                LogXr("Received %d gaussians from Blender", header->gaussian_count);
+                LogXr("Gaussians: %d", header->gaussian_count);
             }
         }
     }
     
-    // ==== PHASE 1: Just pass through for now ====
-    // TODO (Phase 2): Create composition layer with Gaussians
-    // TODO (Phase 3): Render Gaussians to texture
-    
-    /*
-    // PHASE 2+ CODE (uncomment when ready):
-    if (hasGaussianData) {
-        // Create new layer array with our Gaussian layer
-        std::vector<const XrCompositionLayerBaseHeader*> newLayers;
-        
-        // Copy original layers
-        for (uint32_t i = 0; i < frameEndInfo->layerCount; ++i) {
-            newLayers.push_back(frameEndInfo->layers[i]);
-        }
-        
-        // Add Gaussian layer
-        // XrCompositionLayerQuad gaussianQuad = CreateGaussianLayer();
-        // newLayers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&gaussianQuad));
-        
-        // Submit modified frame
-        XrFrameEndInfo modifiedInfo = *frameEndInfo;
-        modifiedInfo.layerCount = static_cast<uint32_t>(newLayers.size());
-        modifiedInfo.layers = newLayers.data();
-        
-        return g_layerState.next_xrEndFrame(session, &modifiedInfo);
-    }
-    */
-    
-    // Pass through to runtime
+    // Phase 1: Just pass through
     g_layerState.frame_active = false;
     return g_layerState.next_xrEndFrame(session, frameEndInfo);
 }
