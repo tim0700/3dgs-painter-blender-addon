@@ -5,31 +5,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ============================================
-# OpenXR SDK (Local)
+# OpenXR SDK - HEADERS ONLY
 # ============================================
+# API Layers don't link to the loader - the loader loads us!
+# We only need the headers, not the full SDK build.
 set(OPENXR_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/OpenXR-SDK)
 
-# Build OpenXR loader - DISABLE ALL GRAPHICS APIs to avoid platform header issues
-set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
-set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
-
-# Disable D3D11/12 detection in OpenXR SDK
-set(BUILD_WITH_SYSTEM_JSONCPP OFF CACHE BOOL "" FORCE)
-set(OPENXR_DEBUG_POSTFIX "" CACHE STRING "" FORCE)
-
-add_subdirectory(${OPENXR_SDK_DIR} openxr_sdk_build)
-
-# Remove D3D11/D3D12 definitions from our target (we'll add them later in Phase 3)
-remove_definitions(-DXR_USE_GRAPHICS_API_D3D11)
-remove_definitions(-DXR_USE_GRAPHICS_API_D3D12)
-
 # ============================================
-# Windows SDK (DirectX)
+# Windows SDK
 # ============================================
-if(WIN32)
-    set(D3D11_LIBRARIES d3d11 dxgi d3dcompiler)
-endif()
+# Note: We do NOT define XR_USE_PLATFORM_WIN32 or any XR_USE_GRAPHICS_API_*
+# because API Layers should be graphics/platform-agnostic.
+# The loader negotiation types are available without these defines.
 
 # ============================================
 # Source Files
@@ -59,16 +46,15 @@ target_include_directories(gaussian_layer PRIVATE
     ${OPENXR_SDK_DIR}/include
 )
 
-target_link_libraries(gaussian_layer PRIVATE
-    openxr_loader
-    ${D3D11_LIBRARIES}
-)
+# ============================================
+# No link libraries - API Layer is loaded by loader, not linked to it
+# ============================================
 
 # ============================================
 # Export Functions
 # ============================================
 set_target_properties(gaussian_layer PROPERTIES
-    PREFIX ""  # No "lib" prefix
+    PREFIX ""
     OUTPUT_NAME "gaussian_layer"
 )
 
