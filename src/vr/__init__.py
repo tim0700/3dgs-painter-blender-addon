@@ -8,6 +8,7 @@ from . import vr_panels
 from . import vr_freehand_paint
 from . import vr_offscreen_renderer
 from . import vr_render_engine
+from . import vr_shared_memory
 
 __version__ = "0.1.0"
 
@@ -17,9 +18,17 @@ def register():
     vr_freehand_paint.register()
     vr_offscreen_renderer.register()
     vr_render_engine.register()
+    # Initialize shared memory for OpenXR Layer communication
+    if vr_shared_memory.init_shared_memory():
+        print("[3DGS Painter VR] Shared memory initialized for OpenXR Layer")
     print("[3DGS Painter VR] VR module registered")
 
 def unregister():
+    # Shutdown shared memory
+    try:
+        vr_shared_memory.shutdown_shared_memory()
+    except:
+        pass
     try:
         get_vr_ray_renderer().unregister()
     except:
@@ -45,4 +54,5 @@ def unregister():
     except:
         pass
     print("[3DGS Painter VR] VR module unregistered")
+
 

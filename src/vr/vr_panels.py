@@ -61,6 +61,21 @@ class NPR_PT_VRPanel(Panel):
         col.label(text="3. Check Stats!")
         
         # ============================================
+        # Phase 3: OpenXR Layer Test (ALWAYS VISIBLE!)
+        # ============================================
+        layout.separator()
+        box = layout.box()
+        box.label(text="Phase 3: OpenXR Layer", icon='GHOST_ENABLED')
+        
+        row = box.row(align=True)
+        row.operator("threegds.openxr_layer_test", text="Send Test Gaussians", icon='EXPORT')
+        
+        col = box.column(align=True)
+        col.scale_y = 0.8
+        col.label(text="Check %TEMP%\\gaussian_layer.log")
+        col.label(text="for 'Gaussians: N' message")
+        
+        # ============================================
         # VR Running sections
         # ============================================
         if is_running:

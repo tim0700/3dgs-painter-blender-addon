@@ -328,12 +328,76 @@ class THREEGDS_OT_VRRayTrack(Operator):
         print("[VR Ray] Tracking stopped")
 
 
+class THREEGDS_OT_OpenXRLayerTest(Operator):
+    """Send test Gaussians to OpenXR Layer via shared memory"""
+    bl_idname = "threegds.openxr_layer_test"
+    bl_label = "Test OpenXR Layer"
+    bl_options = {'REGISTER'}
+    
+    def execute(self, context):
+        from . import vr_shared_memory
+        import numpy as np
+        
+        # Create test gaussians (grid of colored spheres)
+        n_gaussians = 100
+        
+        # Grid positions
+        positions = np.zeros((n_gaussians, 3), dtype=np.float32)
+        for i in range(10):
+            for j in range(10):
+                idx = i * 10 + j
+                positions[idx] = [i * 0.2 - 1.0, 0.0, j * 0.2 - 1.0]
+        
+        # Colors (rainbow gradient)
+        colors = np.zeros((n_gaussians, 4), dtype=np.float32)
+        for i in range(n_gaussians):
+            hue = i / n_gaussians
+            # Simple HSV to RGB
+            if hue < 0.33:
+                colors[i] = [1.0 - hue*3, hue*3, 0.0, 1.0]
+            elif hue < 0.67:
+                colors[i] = [0.0, 1.0 - (hue-0.33)*3, (hue-0.33)*3, 1.0]
+            else:
+                colors[i] = [(hue-0.67)*3, 0.0, 1.0 - (hue-0.67)*3, 1.0]
+        
+        # Scales
+        scales = np.full((n_gaussians, 3), 0.05, dtype=np.float32)
+        
+        # Rotations (identity quaternion)
+        rotations = np.zeros((n_gaussians, 4), dtype=np.float32)
+        rotations[:, 0] = 1.0  # w component
+        
+        # Send to shared memory
+        writer = vr_shared_memory.get_shared_memory_writer()
+        if not writer.is_open():
+            if not writer.create():
+                self.report({'ERROR'}, "Failed to create shared memory")
+                return {'CANCELLED'}
+        
+        success = writer.write_gaussians_numpy(
+            positions=positions,
+            colors=colors,
+            scales=scales,
+            rotations=rotations
+        )
+        
+        if success:
+            self.report({'INFO'}, f"Sent {n_gaussians} test gaussians to OpenXR Layer")
+            print(f"[OpenXR Layer] Sent {n_gaussians} gaussians via shared memory")
+        else:
+            self.report({'ERROR'}, "Failed to write gaussians")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+
 classes = [
     THREEGDS_OT_VRPaintStroke,
     THREEGDS_OT_StartVRSession,
     THREEGDS_OT_StopVRSession,
     THREEGDS_OT_TestVRInput,
     THREEGDS_OT_VRRayTrack,
+    THREEGDS_OT_OpenXRLayerTest,
 ]
 
 
