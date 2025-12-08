@@ -85,9 +85,12 @@ static PFNGLENABLEVERTEXATTRIBARRAYPROC pfn_glEnableVertexAttribArray = nullptr;
 static bool g_rendererExtLoaded = false;
 
 static void LogRenderer(const char* msg) {
-    OutputDebugStringA("[GaussianRender] ");
-    OutputDebugStringA(msg);
-    OutputDebugStringA("\n");
+    if (msg) {
+        printf("[GaussianRender] %s\n", msg);
+        OutputDebugStringA("[GaussianRender] ");
+        OutputDebugStringA(msg);
+        OutputDebugStringA("\n");
+    }
 }
 
 static bool LoadRendererExtensions() {
@@ -390,14 +393,9 @@ void GaussianRenderer::RenderFromPrimitives(
         }
         hasMatrices = viewNonZero && projNonZero;
         
-        // TEMPORARY: Force 2D mode until projection is verified
-        hasMatrices = false;  // <-- Disable 3D projection for now
-        
-        if (debugCounter % 60 == 1) {
-            char buf[256];
-            sprintf(buf, "Matrix status: view=%s, proj=%s (3D disabled for debug)", 
-                    viewNonZero ? "yes" : "no", projNonZero ? "yes" : "no");
-            LogRenderer(buf);
+        if (hasMatrices) {
+            viewMatrix = header->view_matrix;
+            projMatrix = header->proj_matrix;
         }
     }
     

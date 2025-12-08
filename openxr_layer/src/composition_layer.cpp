@@ -200,18 +200,43 @@ void QuadLayer::Shutdown() {
 bool QuadLayer::CreateReferenceSpace() {
     if (!pfn_xrCreateReferenceSpace) return false;
     
+    // Try to create VIEW space (Head-Locked) first for HUD-like experience
     XrReferenceSpaceCreateInfo createInfo = { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
-    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     createInfo.poseInReferenceSpace.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
     createInfo.poseInReferenceSpace.position = { 0.0f, 0.0f, 0.0f };
     
     XrResult result = pfn_xrCreateReferenceSpace(m_session, &createInfo, &m_localSpace);
-    if (XR_FAILED(result)) {
-        LogLayer("xrCreateReferenceSpace failed: %d", result);
-        return false;
+    if (XR_SUCCEEDED(result)) {
+        LogLayer("Reference space created: VIEW (Head-Locked)");
+        
+        // VIEW space: Z is forward (negative Z), Y is up
+        // Position Quad 2 meters in front of head
+        m_pose.position = { 0.0f, 0.0f, -2.0f };
+        m_pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
+        
+        // Large Size: 2m x 2m to cover significant FOV
+        m_size.width = 2.0f;
+        m_size.height = 2.0f;
+    } else {
+        // Fallback to LOCAL space
+        LogLayer("VIEW space failed (%d), falling back to LOCAL", result);
+        createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        result = pfn_xrCreateReferenceSpace(m_session, &createInfo, &m_localSpace);
+        if (XR_FAILED(result)) {
+            LogLayer("xrCreateReferenceSpace LOCAL failed: %d", result);
+            return false;
+        }
+        LogLayer("Reference space created: LOCAL (World-Locked)");
+        
+        // LOCAL space: Origin is usually at floor center or initial head pos
+        // Position at rough eye level in front
+        m_pose.position = { 0.0f, 1.5f, -1.0f };
+        m_pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
+        m_size.width = 1.0f;
+        m_size.height = 1.0f;
     }
     
-    LogLayer("Reference space created");
     return true;
 }
 

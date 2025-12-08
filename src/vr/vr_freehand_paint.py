@@ -491,7 +491,9 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
                         rot_mat = viewer_rot.to_matrix().to_4x4()
                         trans_mat = Matrix.Translation(viewer_pos)
                         view_mat = (trans_mat @ rot_mat).inverted()
-                        view_matrix = np.array(view_mat, dtype=np.float32).flatten()
+                        
+                        # Transpose for OpenGL (column-major)
+                        view_matrix = np.array(view_mat.transposed(), dtype=np.float32).flatten()
                         
                         # Simple perspective projection (90 degree FOV)
                         import math
@@ -506,7 +508,9 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
                         proj[2, 2] = (far + near) / (near - far)
                         proj[2, 3] = (2 * far * near) / (near - far)
                         proj[3, 2] = -1
-                        proj_matrix = proj.flatten()
+                        
+                        # Transpose manually constructed projection matrix (it's numpy, so .T)
+                        proj_matrix = proj.T.flatten()
                         
                 except Exception as e:
                     print(f"[VR Paint] Matrix extraction error: {e}")
