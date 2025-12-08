@@ -42,6 +42,23 @@ public:
         const GaussianPrimitive* gaussians,
         uint32_t count,
         const SharedMemoryHeader* header = nullptr);
+    
+    /**
+     * Render with explicit view/projection matrices (for stereo per-eye rendering)
+     * @param gaussians Array of GaussianPrimitive data
+     * @param count Number of Gaussians
+     * @param viewMatrix 4x4 column-major view matrix
+     * @param projMatrix 4x4 column-major projection matrix
+     * @param viewportWidth Render target width
+     * @param viewportHeight Render target height
+     */
+    void RenderFromPrimitivesWithMatrices(
+        const GaussianPrimitive* gaussians,
+        uint32_t count,
+        const float* viewMatrix,
+        const float* projMatrix,
+        uint32_t viewportWidth,
+        uint32_t viewportHeight);
 
 private:
     bool CreateShader();

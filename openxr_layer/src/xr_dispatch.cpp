@@ -13,7 +13,8 @@
 #include "xr_dispatch.h"
 #include "shared_memory.h"
 #include "gaussian_data.h"
-#include "composition_layer.h"
+#include "projection_layer.h"  // NEW: Stereo 3D rendering
+#include "composition_layer.h"  // Keep for fallback
 #include "gpu_context.h"
 #include "gaussian_renderer.h"
 
@@ -144,14 +145,14 @@ XrResult XRAPI_CALL gaussian_xrBeginFrame(
     g_layerState.session = session;
     g_layerState.frame_active = true;
     
-    // Initialize QuadLayer if not done yet
+    // Initialize ProjectionLayer if not done yet (stereo 3D rendering)
     if (!g_layerState.quadLayerInitialized && g_layerState.instance != XR_NULL_HANDLE) {
-        LogXr("Initializing QuadLayer...");
-        if (GetQuadLayer().Initialize(g_layerState.instance, session, 256, 256)) {
+        LogXr("Initializing ProjectionLayer (stereo 3D)...");
+        if (GetProjectionLayer().Initialize(g_layerState.instance, session, 1024, 1024)) {
             g_layerState.quadLayerInitialized = true;
-            LogXr("QuadLayer initialized successfully");
+            LogXr("ProjectionLayer initialized successfully");
         } else {
-            LogXr("Failed to initialize QuadLayer");
+            LogXr("Failed to initialize ProjectionLayer");
         }
     }
     
@@ -198,71 +199,79 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
         }
     }
     
-    // If QuadLayer is initialized, try to render and inject it
-    if (g_layerState.quadLayerInitialized && GetQuadLayer().IsInitialized()) {
-        // Acquire texture and render
-        GLuint texture = GetQuadLayer().BeginRender();
-        if (texture != 0) {
-            // Initialize GaussianRenderer if needed
-            static bool rendererInitialized = false;
-            if (!rendererInitialized) {
-                if (GetGaussianRenderer().Initialize()) {
-                    rendererInitialized = true;
-                    LogXr("GaussianRenderer initialized");
-                }
+    // ==========================================
+    // STEREO 3D RENDERING with ProjectionLayer
+    // ==========================================
+    if (g_layerState.quadLayerInitialized && GetProjectionLayer().IsInitialized()) {
+        // Initialize GaussianRenderer if needed
+        static bool rendererInitialized = false;
+        if (!rendererInitialized) {
+            if (GetGaussianRenderer().Initialize()) {
+                rendererInitialized = true;
+                LogXr("GaussianRenderer initialized for stereo");
             }
-            
-            // Background color based on data state (for debugging)
-            if (g_layerState.gaussian_render_count >= 50) {
-                GetQuadLayer().ClearWithColor(0.0f, 0.0f, 0.3f, 1.0f);  // Dark blue bg
-            } else if (g_layerState.gaussian_render_count > 0) {
-                GetQuadLayer().ClearWithColor(0.0f, 0.3f, 0.0f, 1.0f);  // Dark green bg
-            } else {
-                GetQuadLayer().ClearWithColor(0.3f, 0.0f, 0.0f, 1.0f);  // Dark red bg
-            }
-            
-            // Render Gaussians if we have data
-            if (rendererInitialized && g_sharedMemory.IsOpen() && g_layerState.gaussian_render_count > 0) {
-                const auto* buffer = g_sharedMemory.GetBuffer();
-                if (buffer && buffer->header.gaussian_count > 0) {
-                    GetGaussianRenderer().RenderFromPrimitives(
-                        buffer->gaussians,
-                        buffer->header.gaussian_count,
-                        &buffer->header
-                    );
-                }
-            }
-            
-            GetQuadLayer().EndRender();
-            
-            // Get our quad layer
-            auto* quadLayerHeader = GetQuadLayer().GetLayer(frameEndInfo->displayTime);
-            
-            if (quadLayerHeader) {
-                // Create new layers array with our layer added
-                std::vector<const XrCompositionLayerBaseHeader*> allLayers;
-                allLayers.reserve(frameEndInfo->layerCount + 1);
+        }
+        
+        // Locate views for this frame (get per-eye poses)
+        GetProjectionLayer().LocateViews(frameEndInfo->displayTime);
+        
+        // Render to each eye
+        for (uint32_t eye = 0; eye < 2; eye++) {
+            GLuint texture = GetProjectionLayer().BeginRenderEye(eye);
+            if (texture != 0) {
+                // Clear with transparent background
+                glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
                 
-                // Copy original layers
-                for (uint32_t i = 0; i < frameEndInfo->layerCount; i++) {
-                    allLayers.push_back(frameEndInfo->layers[i]);
+                // Render Gaussians with per-eye view/projection
+                if (rendererInitialized && g_sharedMemory.IsOpen() && g_layerState.gaussian_render_count > 0) {
+                    const auto* buffer = g_sharedMemory.GetBuffer();
+                    if (buffer && buffer->header.gaussian_count > 0) {
+                        // Get per-eye matrices from ProjectionLayer
+                        const float* viewMatrix = GetProjectionLayer().GetViewMatrix(eye);
+                        const float* projMatrix = GetProjectionLayer().GetProjectionMatrix(eye);
+                        
+                        GetGaussianRenderer().RenderFromPrimitivesWithMatrices(
+                            buffer->gaussians,
+                            buffer->header.gaussian_count,
+                            viewMatrix,
+                            projMatrix,
+                            1024, 1024  // viewport size
+                        );
+                    }
                 }
                 
-                // Add our quad layer
-                allLayers.push_back(quadLayerHeader);
-                
-                // Create modified frameEndInfo
-                XrFrameEndInfo modifiedEndInfo = *frameEndInfo;
-                modifiedEndInfo.layerCount = static_cast<uint32_t>(allLayers.size());
-                modifiedEndInfo.layers = allLayers.data();
-                
-                if (g_layerState.frame_count % 60 == 0) {
-                    LogXr("Injecting quad layer (total layers: %u)", modifiedEndInfo.layerCount);
-                }
-                
-                g_layerState.frame_active = false;
-                return g_layerState.next_xrEndFrame(session, &modifiedEndInfo);
+                GetProjectionLayer().EndRenderEye();
             }
+        }
+        
+        // Get projection layer (replaces quad layer - this is TRUE 3D!)
+        auto* projLayerHeader = GetProjectionLayer().GetLayer();
+        
+        if (projLayerHeader) {
+            // Create new layers array with our layer REPLACING Blender's
+            std::vector<const XrCompositionLayerBaseHeader*> allLayers;
+            allLayers.reserve(frameEndInfo->layerCount + 1);
+            
+            // Copy original layers (Blender's)
+            for (uint32_t i = 0; i < frameEndInfo->layerCount; i++) {
+                allLayers.push_back(frameEndInfo->layers[i]);
+            }
+            
+            // Add our projection layer
+            allLayers.push_back(projLayerHeader);
+            
+            // Create modified frameEndInfo
+            XrFrameEndInfo modifiedEndInfo = *frameEndInfo;
+            modifiedEndInfo.layerCount = static_cast<uint32_t>(allLayers.size());
+            modifiedEndInfo.layers = allLayers.data();
+            
+            if (g_layerState.frame_count % 60 == 0) {
+                LogXr("Injecting stereo projection layer (total: %u)", modifiedEndInfo.layerCount);
+            }
+            
+            g_layerState.frame_active = false;
+            return g_layerState.next_xrEndFrame(session, &modifiedEndInfo);
         }
     }
     

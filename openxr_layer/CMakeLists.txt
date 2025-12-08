@@ -25,6 +25,7 @@ set(SOURCES
     src/main.cpp
     src/xr_dispatch.cpp
     src/composition_layer.cpp
+    src/projection_layer.cpp
     src/shared_memory.cpp
     src/gaussian_renderer.cpp
     src/gpu_context.cpp

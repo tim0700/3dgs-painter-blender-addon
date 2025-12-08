@@ -611,5 +611,109 @@ void GaussianRenderer::RenderFromPrimitives(
     pfn_glUseProgram(0);
 }
 
+void GaussianRenderer::RenderFromPrimitivesWithMatrices(
+    const GaussianPrimitive* gaussians,
+    uint32_t count,
+    const float* viewMatrix,
+    const float* projMatrix,
+    uint32_t viewportWidth,
+    uint32_t viewportHeight)
+{
+    if (!m_initialized || count == 0 || !gaussians || !viewMatrix || !projMatrix) {
+        return;
+    }
+    
+    // Prepare instance data: [position(3) + rotation(4) + scale(3) + color(4)] = 14 floats per gaussian
+    const int floatsPerInstance = 14;
+    std::vector<float> instanceData(count * floatsPerInstance);
+    
+    for (uint32_t i = 0; i < count; i++) {
+        int base = i * floatsPerInstance;
+        const auto& g = gaussians[i];
+        
+        instanceData[base + 0] = g.position[0];
+        instanceData[base + 1] = g.position[1];
+        instanceData[base + 2] = g.position[2];
+        instanceData[base + 3] = g.rotation[0];
+        instanceData[base + 4] = g.rotation[1];
+        instanceData[base + 5] = g.rotation[2];
+        instanceData[base + 6] = g.rotation[3];
+        instanceData[base + 7] = g.scale[0];
+        instanceData[base + 8] = g.scale[1];
+        instanceData[base + 9] = g.scale[2];
+        instanceData[base + 10] = g.color[0];
+        instanceData[base + 11] = g.color[1];
+        instanceData[base + 12] = g.color[2];
+        instanceData[base + 13] = g.color[3];
+    }
+    
+    // Bind VAO
+    pfn_glBindVertexArray(m_vao);
+    
+    // Upload instance data
+    pfn_glBindBuffer(GL_ARRAY_BUFFER, m_instanceBuffer);
+    pfn_glBufferData(GL_ARRAY_BUFFER, instanceData.size() * sizeof(float), instanceData.data(), GL_DYNAMIC_DRAW);
+    
+    // Setup instance attributes
+    const int stride = floatsPerInstance * sizeof(float);
+    pfn_glVertexAttribPointer(1, 3, GL_FLOAT, 0, stride, (void*)(0 * sizeof(float)));
+    pfn_glEnableVertexAttribArray(1);
+    if (pfn_glVertexAttribDivisor) pfn_glVertexAttribDivisor(1, 1);
+    
+    pfn_glVertexAttribPointer(2, 4, GL_FLOAT, 0, stride, (void*)(3 * sizeof(float)));
+    pfn_glEnableVertexAttribArray(2);
+    if (pfn_glVertexAttribDivisor) pfn_glVertexAttribDivisor(2, 1);
+    
+    pfn_glVertexAttribPointer(3, 3, GL_FLOAT, 0, stride, (void*)(7 * sizeof(float)));
+    pfn_glEnableVertexAttribArray(3);
+    if (pfn_glVertexAttribDivisor) pfn_glVertexAttribDivisor(3, 1);
+    
+    pfn_glVertexAttribPointer(4, 4, GL_FLOAT, 0, stride, (void*)(10 * sizeof(float)));
+    pfn_glEnableVertexAttribArray(4);
+    if (pfn_glVertexAttribDivisor) pfn_glVertexAttribDivisor(4, 1);
+    
+    // Use shader
+    pfn_glUseProgram(m_shaderProgram);
+    
+    // Upload view/projection matrices (explicit from ProjectionLayer)
+    if (pfn_glUniformMatrix4fv) {
+        if (m_viewMatrixLoc >= 0) {
+            pfn_glUniformMatrix4fv(m_viewMatrixLoc, 1, 0, viewMatrix);
+        }
+        if (m_projMatrixLoc >= 0) {
+            pfn_glUniformMatrix4fv(m_projMatrixLoc, 1, 0, projMatrix);
+        }
+    }
+    
+    // Viewport and focal length
+    float viewportW = (float)viewportWidth;
+    float viewportH = (float)viewportHeight;
+    float focalX = projMatrix[0] * viewportW * 0.5f;
+    float focalY = projMatrix[5] * viewportH * 0.5f;
+    
+    if (pfn_glUniform2f) {
+        if (m_viewportLoc >= 0) {
+            pfn_glUniform2f(m_viewportLoc, viewportW, viewportH);
+        }
+        if (m_focalLoc >= 0) {
+            pfn_glUniform2f(m_focalLoc, focalX, focalY);
+        }
+    }
+    
+    // Enable blending, disable depth test
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_DEPTH_TEST);
+    
+    // Draw instanced quads
+    if (pfn_glDrawArraysInstanced) {
+        pfn_glDrawArraysInstanced(GL_TRIANGLES, 0, 6, count);
+    }
+    
+    // Cleanup
+    pfn_glBindVertexArray(0);
+    pfn_glUseProgram(0);
+}
+
 }  // namespace gaussian
 
