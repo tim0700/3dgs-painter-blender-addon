@@ -425,6 +425,45 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
         #     
         # except Exception as e:
         #     print(f"[VR Paint] VR mesh sync error: {e}")
+        
+        # ============================================================
+        # 4. OpenXR Layer Shared Memory (Phase 5 - native VR rendering!)
+        # ============================================================
+        try:
+            from .vr_shared_memory import write_gaussians_to_vr
+            import numpy as np
+            
+            # Convert accumulated gaussians to numpy arrays
+            n = len(self._accumulated_gaussians)
+            if n > 0:
+                positions = np.zeros((n, 3), dtype=np.float32)
+                colors = np.zeros((n, 4), dtype=np.float32)
+                scales = np.zeros((n, 3), dtype=np.float32)
+                rotations = np.zeros((n, 4), dtype=np.float32)
+                
+                for i, g in enumerate(self._accumulated_gaussians):
+                    pos = g['position']
+                    positions[i] = [pos.x, pos.y, pos.z]
+                    
+                    col = g['color']
+                    colors[i] = [col[0], col[1], col[2], g.get('opacity', 1.0)]
+                    
+                    scale = g['scale']
+                    scales[i] = [scale.x, scale.y, scale.z]
+                    
+                    rot = g['rotation']
+                    rotations[i] = [rot.w, rot.x, rot.y, rot.z]
+                
+                write_gaussians_to_vr({
+                    'positions': positions,
+                    'colors': colors,
+                    'scales': scales,
+                    'rotations': rotations
+                })
+                print(f"[VR Paint] OpenXR Layer sync: {n} gaussians")
+                
+        except Exception as e:
+            print(f"[VR Paint] OpenXR Layer sync error: {e}")
     
     def _update_preview(self, context, position: Vector, rotation: Quaternion):
         """Update brush preview at controller position."""
