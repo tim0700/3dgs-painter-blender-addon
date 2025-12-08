@@ -531,6 +531,7 @@ void GaussianRenderer::RenderFromPrimitivesWithMatrices(
     uint32_t count,
     const float* viewMatrix,
     const float* projMatrix,
+    const float* cameraRotation,
     uint32_t viewportWidth,
     uint32_t viewportHeight)
 {
@@ -538,17 +539,38 @@ void GaussianRenderer::RenderFromPrimitivesWithMatrices(
         return;
     }
     
-    // Compute center of all Gaussians to offset them relative to VR origin
-    // This handles the coordinate system mismatch between Blender world and OpenXR LOCAL
-    float centerX = 0, centerY = 0, centerZ = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        centerX += gaussians[i].position[0];
-        centerY += gaussians[i].position[1];
-        centerZ += gaussians[i].position[2];
+    // Use a FIXED world origin offset, computed only once at first render
+    // This ensures stable world-space positioning instead of HMD-relative
+    static bool originSet = false;
+    static float originX = 0, originY = 0, originZ = 0;
+    if (!originSet) {
+        // Set origin to first Gaussian position (where drawing started)
+        originX = gaussians[0].position[0];
+        originY = gaussians[0].position[1];
+        originZ = gaussians[0].position[2];
+        originSet = true;
     }
-    centerX /= count;
-    centerY /= count;
-    centerZ /= count;
+    
+    // Camera Z rotation compensation: Blender VR base pose uses camera as reference
+    // Apply inverse of camera Z rotation (roll) in Blender coordinate space BEFORE conversion
+    // We only care about Z rotation since that's what affects the coordinate system alignment
+    float cosZ = 1.0f, sinZ = 0.0f;
+    if (cameraRotation) {
+        // Extract Z rotation from quaternion (simplified for Z-axis only)
+        // For a Z-rotation quaternion: q = (cos(θ/2), 0, 0, sin(θ/2))
+        // But camera quaternion is general, so we extract yaw angle from it
+        // Using inverse: rotate by negative camera Z
+        float w = cameraRotation[0];
+        float x = cameraRotation[1];
+        float y = cameraRotation[2];
+        float z = cameraRotation[3];
+        
+        // Apply full inverse rotation for Z component
+        // Simplified: just use the Z rotation component
+        float angle = 2.0f * atan2f(z, w);  // Extract Z rotation angle
+        cosZ = cosf(-angle);  // Inverse rotation
+        sinZ = sinf(-angle);
+    }
     
     // Prepare instance data: [position(3) + rotation(4) + scale(3) + color(4)] = 14 floats per gaussian
     const int floatsPerInstance = 14;
@@ -558,10 +580,21 @@ void GaussianRenderer::RenderFromPrimitivesWithMatrices(
         int base = i * floatsPerInstance;
         const auto& g = gaussians[i];
         
-        // Offset position to bring center to VR origin (approximately 1m in front of user)
-        instanceData[base + 0] = g.position[0] - centerX;
-        instanceData[base + 1] = g.position[1] - centerY;
-        instanceData[base + 2] = g.position[2] - centerZ - 1.0f;  // 1m in front
+        // Offset from fixed origin in Blender coordinates
+        float bx = g.position[0] - originX;
+        float by = g.position[1] - originY;
+        float bz = g.position[2] - originZ;
+        
+        // Apply camera Z rotation compensation (in Blender XY plane)
+        float rx = cosZ * bx - sinZ * by;
+        float ry = sinZ * bx + cosZ * by;
+        float rz = bz;  // Z unchanged for Z-rotation
+        
+        // Convert from Blender (Z-up, Y-forward) to OpenXR (Y-up, -Z forward)
+        instanceData[base + 0] = rx;    // Blender X → OpenXR X
+        instanceData[base + 1] = rz;    // Blender Z → OpenXR Y (up)
+        instanceData[base + 2] = -ry;   // Blender -Y → OpenXR Z (forward)
+        
         instanceData[base + 3] = g.rotation[0];
         instanceData[base + 4] = g.rotation[1];
         instanceData[base + 5] = g.rotation[2];

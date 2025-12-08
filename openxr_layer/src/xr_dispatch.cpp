@@ -229,9 +229,13 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
                 if (rendererInitialized && g_sharedMemory.IsOpen() && g_layerState.gaussian_render_count > 0) {
                     const auto* buffer = g_sharedMemory.GetBuffer();
                     if (buffer && buffer->header.gaussian_count > 0) {
-                        // Get per-eye matrices from ProjectionLayer
+                        // Get per-eye matrices from ProjectionLayer for stereo rendering
+                        // Reference space is now aligned with camera rotation
                         const float* viewMatrix = GetProjectionLayer().GetViewMatrix(eye);
                         const float* projMatrix = GetProjectionLayer().GetProjectionMatrix(eye);
+                        
+                        // Get camera rotation from shared memory header for coordinate alignment
+                        const float* cameraRotation = buffer->header.camera_rotation;
                         
                         if (viewMatrix && projMatrix) {
                             GetGaussianRenderer().RenderFromPrimitivesWithMatrices(
@@ -239,6 +243,7 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
                                 buffer->header.gaussian_count,
                                 viewMatrix,
                                 projMatrix,
+                                cameraRotation,
                                 1024, 1024  // viewport size
                             );
                         }

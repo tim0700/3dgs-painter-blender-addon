@@ -22,7 +22,7 @@ MAX_GAUSSIANS = 100000
 MAGIC_NUMBER = 0x33444753  # "3DGS" in little-endian
 
 # Struct sizes
-HEADER_SIZE = 4 + 4 + 4 + 4 + 4 + 64 + 64  # 148 bytes
+HEADER_SIZE = 4 + 4 + 4 + 4 + 4 + 64 + 64 + 16  # 164 bytes (added camera_rotation quaternion)
 GAUSSIAN_SIZE = 56  # 12 + 16 + 12 + 16 bytes
 BUFFER_SIZE = HEADER_SIZE + (MAX_GAUSSIANS * GAUSSIAN_SIZE)
 
@@ -149,17 +149,18 @@ class SharedMemoryWriter:
         self._mmap.seek(0)
         self._mmap.write(header_data)
     
-    def _write_header(self, 
+    def _write_header(self,
                       gaussian_count: int,
                       view_matrix: Optional[np.ndarray],
-                      proj_matrix: Optional[np.ndarray]):
+                      proj_matrix: Optional[np.ndarray],
+                      camera_rotation: Optional[Tuple[float, float, float, float]] = None):
         """Write header to shared memory."""
         if not self._mmap:
             return
             
         self._frame_id += 1
         
-        # Pack header: magic(4) + version(4) + frame_id(4) + count(4) + flags(4) + view(64) + proj(64)
+        # Pack header: magic(4) + version(4) + frame_id(4) + count(4) + flags(4) + view(64) + proj(64) + camera_rot(16)
         header_data = struct.pack('<5I',
             MAGIC_NUMBER,
             1,  # version
@@ -180,13 +181,20 @@ class SharedMemoryWriter:
         else:
             header_data += struct.pack('<16f', *([0.0] * 16))
         
+        # Camera rotation quaternion (4 floats = 16 bytes) - w, x, y, z
+        if camera_rotation is not None:
+            header_data += struct.pack('<4f', *camera_rotation)
+        else:
+            header_data += struct.pack('<4f', 1.0, 0.0, 0.0, 0.0)  # Identity quaternion
+        
         self._mmap.seek(0)
         self._mmap.write(header_data)
     
     def write_gaussians(self,
                         gaussians: List[GaussianPrimitive],
                         view_matrix: Optional[np.ndarray] = None,
-                        proj_matrix: Optional[np.ndarray] = None) -> bool:
+                        proj_matrix: Optional[np.ndarray] = None,
+                        camera_rotation: Optional[Tuple[float, float, float, float]] = None) -> bool:
         """
         Write Gaussian data to shared memory.
         
@@ -194,6 +202,7 @@ class SharedMemoryWriter:
             gaussians: List of GaussianPrimitive objects
             view_matrix: Optional 4x4 view matrix as flat array (16 floats)
             proj_matrix: Optional 4x4 projection matrix as flat array (16 floats)
+            camera_rotation: Optional camera rotation quaternion (w,x,y,z)
         
         Returns:
             True on success
@@ -204,7 +213,7 @@ class SharedMemoryWriter:
         count = min(len(gaussians), MAX_GAUSSIANS)
         
         # Write header first
-        self._write_header(count, view_matrix, proj_matrix)
+        self._write_header(count, view_matrix, proj_matrix, camera_rotation)
         
         # Write gaussian data
         if count > 0:
@@ -220,7 +229,8 @@ class SharedMemoryWriter:
                               scales: np.ndarray,
                               rotations: np.ndarray,
                               view_matrix: Optional[np.ndarray] = None,
-                              proj_matrix: Optional[np.ndarray] = None) -> bool:
+                              proj_matrix: Optional[np.ndarray] = None,
+                              camera_rotation: Optional[Tuple[float, float, float, float]] = None) -> bool:
         """
         Write Gaussian data from numpy arrays (faster for large datasets).
         
@@ -231,6 +241,7 @@ class SharedMemoryWriter:
             rotations: Nx4 float32 array (quaternion wxyz)
             view_matrix: Optional 16-element float array
             proj_matrix: Optional 16-element float array
+            camera_rotation: Optional camera rotation quaternion (w,x,y,z)
         
         Returns:
             True on success
@@ -240,8 +251,8 @@ class SharedMemoryWriter:
         
         count = min(len(positions), MAX_GAUSSIANS)
         
-        # Write header
-        self._write_header(count, view_matrix, proj_matrix)
+        # Write header with camera rotation
+        self._write_header(count, view_matrix, proj_matrix, camera_rotation)
         
         if count > 0:
             # Prepare interleaved data
@@ -296,6 +307,7 @@ def write_gaussians_to_vr(gaussians_data: dict) -> bool:
             - 'rotations': Nx4 float array
             - 'view_matrix': Optional 16-element array
             - 'proj_matrix': Optional 16-element array
+            - 'camera_rotation': Optional quaternion (w,x,y,z)
     
     Returns:
         True on success
@@ -312,5 +324,6 @@ def write_gaussians_to_vr(gaussians_data: dict) -> bool:
         scales=np.asarray(gaussians_data.get('scales', []), dtype=np.float32),
         rotations=np.asarray(gaussians_data.get('rotations', []), dtype=np.float32),
         view_matrix=gaussians_data.get('view_matrix'),
-        proj_matrix=gaussians_data.get('proj_matrix')
+        proj_matrix=gaussians_data.get('proj_matrix'),
+        camera_rotation=gaussians_data.get('camera_rotation')
     )

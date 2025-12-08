@@ -504,6 +504,17 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
                 except Exception as e:
                     print(f"[VR Paint] Matrix extraction error: {e}")
                 
+                # Get camera rotation from active camera for OpenXR alignment
+                camera_rotation = None
+                try:
+                    camera = context.scene.camera
+                    if camera:
+                        # Get camera rotation as quaternion (w, x, y, z)
+                        cam_rot = camera.rotation_euler.to_quaternion()
+                        camera_rotation = (cam_rot.w, cam_rot.x, cam_rot.y, cam_rot.z)
+                except Exception as e:
+                    print(f"[VR Paint] Camera rotation error: {e}")
+                
                 # Build colors with opacity as 4th channel
                 colors = np.zeros((n, 4), dtype=np.float32)
                 colors[:, :3] = scene_data.colors
@@ -515,7 +526,8 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
                     'scales': scene_data.scales,
                     'rotations': scene_data.rotations,
                     'view_matrix': view_matrix,
-                    'proj_matrix': proj_matrix
+                    'proj_matrix': proj_matrix,
+                    'camera_rotation': camera_rotation
                 })
                 
         except Exception as e:

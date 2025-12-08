@@ -49,6 +49,7 @@ public:
      * @param count Number of Gaussians
      * @param viewMatrix 4x4 column-major view matrix
      * @param projMatrix 4x4 column-major projection matrix
+     * @param cameraRotation Blender camera rotation quaternion (w,x,y,z) for coordinate alignment
      * @param viewportWidth Render target width
      * @param viewportHeight Render target height
      */
@@ -57,6 +58,7 @@ public:
         uint32_t count,
         const float* viewMatrix,
         const float* projMatrix,
+        const float* cameraRotation,
         uint32_t viewportWidth,
         uint32_t viewportHeight);
 
