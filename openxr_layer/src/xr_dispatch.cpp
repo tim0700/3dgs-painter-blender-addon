@@ -143,6 +143,17 @@ XrResult XRAPI_CALL gaussian_xrBeginFrame(
     g_layerState.session = session;
     g_layerState.frame_active = true;
     
+    // Initialize QuadLayer if not done yet
+    if (!g_layerState.quadLayerInitialized && g_layerState.instance != XR_NULL_HANDLE) {
+        LogXr("Initializing QuadLayer...");
+        if (GetQuadLayer().Initialize(g_layerState.instance, session, 256, 256)) {
+            g_layerState.quadLayerInitialized = true;
+            LogXr("QuadLayer initialized successfully");
+        } else {
+            LogXr("Failed to initialize QuadLayer");
+        }
+    }
+    
     return g_layerState.next_xrBeginFrame(session, frameBeginInfo);
 }
 
@@ -186,7 +197,47 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
         }
     }
     
-    // Phase 1: Just pass through
+    // If QuadLayer is initialized, try to render and inject it
+    if (g_layerState.quadLayerInitialized && GetQuadLayer().IsInitialized()) {
+        // Acquire texture and render simple color (test)
+        GLuint texture = GetQuadLayer().BeginRender();
+        if (texture != 0) {
+            // TODO: Render Gaussians here
+            // For now, we just release (texture will show whatever was there)
+            GetQuadLayer().EndRender();
+            
+            // Get our quad layer
+            auto* quadLayerHeader = GetQuadLayer().GetLayer(frameEndInfo->displayTime);
+            
+            if (quadLayerHeader) {
+                // Create new layers array with our layer added
+                std::vector<const XrCompositionLayerBaseHeader*> allLayers;
+                allLayers.reserve(frameEndInfo->layerCount + 1);
+                
+                // Copy original layers
+                for (uint32_t i = 0; i < frameEndInfo->layerCount; i++) {
+                    allLayers.push_back(frameEndInfo->layers[i]);
+                }
+                
+                // Add our quad layer
+                allLayers.push_back(quadLayerHeader);
+                
+                // Create modified frameEndInfo
+                XrFrameEndInfo modifiedEndInfo = *frameEndInfo;
+                modifiedEndInfo.layerCount = static_cast<uint32_t>(allLayers.size());
+                modifiedEndInfo.layers = allLayers.data();
+                
+                if (g_layerState.frame_count % 60 == 0) {
+                    LogXr("Injecting quad layer (total layers: %u)", modifiedEndInfo.layerCount);
+                }
+                
+                g_layerState.frame_active = false;
+                return g_layerState.next_xrEndFrame(session, &modifiedEndInfo);
+            }
+        }
+    }
+    
+    // Fallback: Just pass through without modification
     g_layerState.frame_active = false;
     return g_layerState.next_xrEndFrame(session, frameEndInfo);
 }
@@ -201,37 +252,24 @@ XrResult XRAPI_CALL gaussian_xrCreateSession(
 {
     LogXr("gaussian_xrCreateSession called");
     
-    // Search for graphics binding in the next chain and log all types
+    // Search for graphics binding in the next chain
     const XrBaseInStructure* nextStruct = 
         reinterpret_cast<const XrBaseInStructure*>(createInfo->next);
     
+    bool isOpenGL = false;
     while (nextStruct != nullptr) {
         LogXr("Found binding type: %d", nextStruct->type);
         
-        if (nextStruct->type == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
-            const XrGraphicsBindingD3D11KHR* d3d11Binding = 
-                reinterpret_cast<const XrGraphicsBindingD3D11KHR*>(nextStruct);
-            g_layerState.d3d11Device = d3d11Binding->device;
-            LogXr("Captured D3D11 device from app: %p", g_layerState.d3d11Device);
-            break;
-        }
-        // OpenGL binding - Blender uses this
-        else if (nextStruct->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR) {
-            LogXr("App uses OpenGL (XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR)");
-            // We'll create our own D3D11 device below
+        // OpenGL binding - Blender uses this (type = 1000023000)
+        if (nextStruct->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR) {
+            LogXr("App uses OpenGL - we will use OpenGL composition layers");
+            isOpenGL = true;
         }
         nextStruct = nextStruct->next;
     }
     
-    // If no D3D11 device from app, create our own
-    if (!g_layerState.d3d11Device) {
-        LogXr("No D3D11 device from app, creating our own...");
-        if (GetGPUContext().Initialize()) {
-            g_layerState.d3d11Device = GetGPUContext().GetDevice();
-            LogXr("Created own D3D11 device: %p", g_layerState.d3d11Device);
-        } else {
-            LogXr("ERROR: Failed to create D3D11 device");
-        }
+    if (!isOpenGL) {
+        LogXr("WARNING: App does not use OpenGL Win32 - quad layer may not work");
     }
     
     // Call next in chain
@@ -239,6 +277,7 @@ XrResult XRAPI_CALL gaussian_xrCreateSession(
     
     if (XR_SUCCEEDED(result)) {
         g_layerState.session = *session;
+        g_layerState.instance = instance;
         LogXr("Session created: %p", (void*)(*session));
     }
     

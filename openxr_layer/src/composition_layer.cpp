@@ -1,8 +1,8 @@
 /**
- * Composition Layer Implementation (Phase 3)
+ * Composition Layer Implementation (Phase 3) - OpenGL Version
  * 
- * Uses xrGetInstanceProcAddr to call OpenXR functions dynamically
- * (API Layers cannot link to loader)
+ * Uses OpenGL for compatibility with Blender's OpenXR session.
+ * Implements XrSwapchain and XrCompositionLayerQuad for VR overlay
  */
 
 #include "composition_layer.h"
@@ -41,19 +41,40 @@ static void LogLayer(const char* format, ...) {
 }
 
 // ============================================
-// Load Function Pointers
+// Global Instance
 // ============================================
-static bool LoadFunctions(XrInstance instance) {
+static QuadLayer g_quadLayer;
+
+QuadLayer& GetQuadLayer() {
+    return g_quadLayer;
+}
+
+// ============================================
+// QuadLayer Implementation
+// ============================================
+QuadLayer::QuadLayer() {
+    // Initialize pose to 2 meters in front, at eye level
+    m_pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };  // Identity quaternion
+    m_pose.position = { 0.0f, 0.0f, -2.0f };  // 2m in front
+}
+
+QuadLayer::~QuadLayer() {
+    Shutdown();
+}
+
+bool QuadLayer::LoadOpenXRFunctions() {
+    if (m_functionsLoaded) return true;
+    
     auto& state = GetLayerState();
     auto getProcAddr = state.next_xrGetInstanceProcAddr;
     
-    if (!getProcAddr) {
-        LogLayer("No xrGetInstanceProcAddr available");
+    if (!getProcAddr || m_instance == XR_NULL_HANDLE) {
+        LogLayer("Cannot load functions - no getProcAddr or instance");
         return false;
     }
     
     #define LOAD_XR_FUNC(name) \
-        if (XR_FAILED(getProcAddr(instance, #name, reinterpret_cast<PFN_xrVoidFunction*>(&pfn_##name)))) { \
+        if (XR_FAILED(getProcAddr(m_instance, #name, reinterpret_cast<PFN_xrVoidFunction*>(&pfn_##name)))) { \
             LogLayer("Failed to load " #name); \
             return false; \
         }
@@ -70,34 +91,13 @@ static bool LoadFunctions(XrInstance instance) {
     #undef LOAD_XR_FUNC
     
     LogLayer("All OpenXR functions loaded");
+    m_functionsLoaded = true;
     return true;
-}
-
-// ============================================
-// Global Instance
-// ============================================
-static QuadLayer g_quadLayer;
-
-QuadLayer& GetQuadLayer() {
-    return g_quadLayer;
-}
-
-// ============================================
-// QuadLayer Implementation
-// ============================================
-QuadLayer::QuadLayer() {
-    m_pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
-    m_pose.position = { 0.0f, 0.0f, -2.0f };
-}
-
-QuadLayer::~QuadLayer() {
-    Shutdown();
 }
 
 bool QuadLayer::Initialize(
     XrInstance instance,
     XrSession session,
-    ID3D11Device* d3d11Device,
     uint32_t width,
     uint32_t height)
 {
@@ -105,31 +105,33 @@ bool QuadLayer::Initialize(
         return true;
     }
     
-    LogLayer("Initializing QuadLayer %ux%u", width, height);
-    
-    // Load OpenXR functions
-    if (!LoadFunctions(instance)) {
-        LogLayer("Failed to load OpenXR functions");
-        return false;
-    }
+    LogLayer("Initializing OpenGL QuadLayer %ux%u", width, height);
     
     m_instance = instance;
     m_session = session;
     m_width = width;
     m_height = height;
     
+    // Load OpenXR functions
+    if (!LoadOpenXRFunctions()) {
+        LogLayer("Failed to load OpenXR functions");
+        return false;
+    }
+    
+    // Create reference space
     if (!CreateReferenceSpace()) {
         LogLayer("Failed to create reference space");
         return false;
     }
     
-    if (!CreateSwapchain(d3d11Device, width, height)) {
-        LogLayer("Failed to create swapchain");
+    // Create OpenGL swapchain
+    if (!CreateSwapchain(width, height)) {
+        LogLayer("Failed to create OpenGL swapchain");
         Shutdown();
         return false;
     }
     
-    LogLayer("QuadLayer initialized successfully");
+    LogLayer("OpenGL QuadLayer initialized successfully");
     return true;
 }
 
@@ -164,16 +166,18 @@ bool QuadLayer::CreateReferenceSpace() {
         return false;
     }
     
+    LogLayer("Reference space created");
     return true;
 }
 
-bool QuadLayer::CreateSwapchain(ID3D11Device* device, uint32_t width, uint32_t height) {
+bool QuadLayer::CreateSwapchain(uint32_t width, uint32_t height) {
     if (!pfn_xrCreateSwapchain || !pfn_xrEnumerateSwapchainImages) return false;
     
+    // Create OpenGL swapchain with RGBA format
     XrSwapchainCreateInfo createInfo = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
     createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | 
                            XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-    createInfo.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    createInfo.format = GL_RGBA8;  // OpenGL format
     createInfo.sampleCount = 1;
     createInfo.width = width;
     createInfo.height = height;
@@ -187,6 +191,7 @@ bool QuadLayer::CreateSwapchain(ID3D11Device* device, uint32_t width, uint32_t h
         return false;
     }
     
+    // Enumerate swapchain images
     uint32_t imageCount = 0;
     result = pfn_xrEnumerateSwapchainImages(m_swapchain, 0, &imageCount, nullptr);
     if (XR_FAILED(result) || imageCount == 0) {
@@ -196,7 +201,7 @@ bool QuadLayer::CreateSwapchain(ID3D11Device* device, uint32_t width, uint32_t h
     
     m_swapchainImages.resize(imageCount);
     for (auto& img : m_swapchainImages) {
-        img.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
+        img.type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
         img.next = nullptr;
     }
     
@@ -212,36 +217,41 @@ bool QuadLayer::CreateSwapchain(ID3D11Device* device, uint32_t width, uint32_t h
         return false;
     }
     
-    LogLayer("Swapchain created with %u images", imageCount);
+    LogLayer("OpenGL swapchain created with %u images", imageCount);
+    for (uint32_t i = 0; i < imageCount; i++) {
+        LogLayer("  Image %u: GL texture %u", i, m_swapchainImages[i].image);
+    }
     return true;
 }
 
-ID3D11Texture2D* QuadLayer::BeginRender() {
+GLuint QuadLayer::BeginRender() {
     if (m_swapchain == XR_NULL_HANDLE || !pfn_xrAcquireSwapchainImage || !pfn_xrWaitSwapchainImage) {
-        return nullptr;
+        return 0;
     }
     
     if (m_renderInProgress) {
-        return nullptr;
+        return 0;
     }
     
+    // Acquire swapchain image
     XrSwapchainImageAcquireInfo acquireInfo = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
     XrResult result = pfn_xrAcquireSwapchainImage(m_swapchain, &acquireInfo, &m_currentImageIndex);
     if (XR_FAILED(result)) {
         LogLayer("xrAcquireSwapchainImage failed: %d", result);
-        return nullptr;
+        return 0;
     }
     
+    // Wait for image to be ready
     XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
     waitInfo.timeout = XR_INFINITE_DURATION;
     result = pfn_xrWaitSwapchainImage(m_swapchain, &waitInfo);
     if (XR_FAILED(result)) {
         LogLayer("xrWaitSwapchainImage failed: %d", result);
-        return nullptr;
+        return 0;
     }
     
     m_renderInProgress = true;
-    return m_swapchainImages[m_currentImageIndex].texture;
+    return m_swapchainImages[m_currentImageIndex].image;
 }
 
 void QuadLayer::EndRender() {
@@ -255,14 +265,12 @@ void QuadLayer::EndRender() {
     m_renderInProgress = false;
 }
 
-const XrCompositionLayerBaseHeader* QuadLayer::GetLayer(
-    XrSpace space,
-    XrTime displayTime)
-{
+const XrCompositionLayerBaseHeader* QuadLayer::GetLayer(XrTime displayTime) {
     if (m_swapchain == XR_NULL_HANDLE) {
         return nullptr;
     }
     
+    // Configure quad layer
     m_quadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
     m_quadLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     m_quadLayer.space = m_localSpace;
@@ -270,6 +278,7 @@ const XrCompositionLayerBaseHeader* QuadLayer::GetLayer(
     m_quadLayer.pose = m_pose;
     m_quadLayer.size = m_size;
     
+    // Swapchain subimage
     m_quadLayer.subImage.swapchain = m_swapchain;
     m_quadLayer.subImage.imageArrayIndex = 0;
     m_quadLayer.subImage.imageRect.offset = { 0, 0 };

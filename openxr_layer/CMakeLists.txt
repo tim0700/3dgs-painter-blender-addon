@@ -47,12 +47,13 @@ target_include_directories(gaussian_layer PRIVATE
 )
 
 # ============================================
-# D3D11 for GPU rendering (Phase 3)
+# Graphics libraries for GPU rendering (Phase 3)
 # ============================================
 target_link_libraries(gaussian_layer PRIVATE
     d3d11
     dxgi
     d3dcompiler
+    opengl32
 )
 
 # ============================================
