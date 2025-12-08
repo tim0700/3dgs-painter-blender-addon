@@ -366,13 +366,22 @@ void GaussianRenderer::RenderFromPrimitives(
 {
     if (!gaussians || count == 0) return;
     
+    // Debug: Log entry
+    static int debugCounter = 0;
+    if (debugCounter++ % 60 == 0) {
+        char buf[256];
+        sprintf(buf, "RenderFromPrimitives called: count=%u, header=%s", 
+                count, header ? "yes" : "no");
+        LogRenderer(buf);
+    }
+    
     // Check if we have valid view/proj matrices
     bool hasMatrices = false;
     const float* viewMatrix = nullptr;
     const float* projMatrix = nullptr;
     
     if (header) {
-        // Check if matrices are non-zero (at least one element should be non-zero for valid matrix)
+        // Check if matrices are non-zero
         bool viewNonZero = false;
         bool projNonZero = false;
         for (int i = 0; i < 16; i++) {
@@ -380,9 +389,15 @@ void GaussianRenderer::RenderFromPrimitives(
             if (header->proj_matrix[i] != 0.0f) projNonZero = true;
         }
         hasMatrices = viewNonZero && projNonZero;
-        if (hasMatrices) {
-            viewMatrix = header->view_matrix;
-            projMatrix = header->proj_matrix;
+        
+        // TEMPORARY: Force 2D mode until projection is verified
+        hasMatrices = false;  // <-- Disable 3D projection for now
+        
+        if (debugCounter % 60 == 1) {
+            char buf[256];
+            sprintf(buf, "Matrix status: view=%s, proj=%s (3D disabled for debug)", 
+                    viewNonZero ? "yes" : "no", projNonZero ? "yes" : "no");
+            LogRenderer(buf);
         }
     }
     
