@@ -201,25 +201,37 @@ XrResult XRAPI_CALL gaussian_xrCreateSession(
 {
     LogXr("gaussian_xrCreateSession called");
     
-    // Search for D3D11 graphics binding in the next chain
+    // Search for graphics binding in the next chain and log all types
     const XrBaseInStructure* nextStruct = 
         reinterpret_cast<const XrBaseInStructure*>(createInfo->next);
     
     while (nextStruct != nullptr) {
+        LogXr("Found binding type: %d", nextStruct->type);
+        
         if (nextStruct->type == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
-            // Found D3D11 binding - extract device
             const XrGraphicsBindingD3D11KHR* d3d11Binding = 
                 reinterpret_cast<const XrGraphicsBindingD3D11KHR*>(nextStruct);
-            
             g_layerState.d3d11Device = d3d11Binding->device;
-            LogXr("Captured D3D11 device: %p", g_layerState.d3d11Device);
+            LogXr("Captured D3D11 device from app: %p", g_layerState.d3d11Device);
             break;
+        }
+        // OpenGL binding - Blender uses this
+        else if (nextStruct->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR) {
+            LogXr("App uses OpenGL (XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR)");
+            // We'll create our own D3D11 device below
         }
         nextStruct = nextStruct->next;
     }
     
+    // If no D3D11 device from app, create our own
     if (!g_layerState.d3d11Device) {
-        LogXr("WARNING: No D3D11 device found in session create info");
+        LogXr("No D3D11 device from app, creating our own...");
+        if (GetGPUContext().Initialize()) {
+            g_layerState.d3d11Device = GetGPUContext().GetDevice();
+            LogXr("Created own D3D11 device: %p", g_layerState.d3d11Device);
+        } else {
+            LogXr("ERROR: Failed to create D3D11 device");
+        }
     }
     
     // Call next in chain
