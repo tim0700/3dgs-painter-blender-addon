@@ -7,6 +7,76 @@ from bpy.app.handlers import persistent
 
 _original_toggle = None
 _paint_action_added = False
+_teleport_original_op = None  # Store original teleport operator for restore
+
+
+def disable_teleport_action():
+    """
+    Disable teleport action to prevent it from triggering when using trigger for painting.
+    
+    This sets the teleport action's operator to empty string, preventing teleportation
+    while still allowing us to read the trigger value for painting.
+    """
+    global _teleport_original_op
+    
+    try:
+        wm = bpy.context.window_manager
+        if not hasattr(wm, 'xr_session_state') or wm.xr_session_state is None:
+            print("[3DGS VR] Cannot disable teleport - no XR session")
+            return False
+        
+        session = wm.xr_session_state
+        am = session.actionmaps.get("blender_default")
+        if am is None:
+            print("[3DGS VR] blender_default actionmap not found")
+            return False
+        
+        # Find teleport action
+        teleport_ami = am.actionmap_items.get("teleport")
+        if teleport_ami is None:
+            print("[3DGS VR] teleport action not found")
+            return False
+        
+        # Store original operator and disable it
+        _teleport_original_op = teleport_ami.op
+        teleport_ami.op = ""  # Empty operator = no action
+        
+        print(f"[3DGS VR] Teleport disabled (was: {_teleport_original_op})")
+        return True
+        
+    except Exception as e:
+        print(f"[3DGS VR] Failed to disable teleport: {e}")
+        return False
+
+
+def restore_teleport_action():
+    """Restore teleport action to its original state."""
+    global _teleport_original_op
+    
+    if _teleport_original_op is None:
+        return
+    
+    try:
+        wm = bpy.context.window_manager
+        if not hasattr(wm, 'xr_session_state') or wm.xr_session_state is None:
+            return
+        
+        session = wm.xr_session_state
+        am = session.actionmaps.get("blender_default")
+        if am is None:
+            return
+        
+        teleport_ami = am.actionmap_items.get("teleport")
+        if teleport_ami:
+            teleport_ami.op = _teleport_original_op
+            print(f"[3DGS VR] Teleport restored: {_teleport_original_op}")
+        
+        _teleport_original_op = None
+        
+    except Exception as e:
+        print(f"[3DGS VR] Failed to restore teleport: {e}")
+
+
 
 
 def add_paint_action(session_state):

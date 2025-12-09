@@ -8,7 +8,7 @@ from mathutils import Vector, Matrix
 
 from .vr_session import get_vr_session_manager
 from .vr_input import get_vr_input_manager, ControllerHand
-from .action_maps import try_add_paint_action_now
+from .action_maps import try_add_paint_action_now, disable_teleport_action, restore_teleport_action
 
 
 # ============================================
@@ -276,9 +276,15 @@ class THREEGDS_OT_StartVRSession(Operator):
         # Start continuous view matrix updater
         _start_vr_matrix_updater()
         
+        # Disable teleport so trigger only paints (not teleports)
+        disable_teleport_action()
+        
+        # Auto-start freehand paint mode (PASS_THROUGH allows VR movement to work)
+        bpy.ops.threegds.vr_freehand_paint('INVOKE_DEFAULT')
+        
         # Add paint action to blender_default
         if try_add_paint_action_now():
-            self.report({'INFO'}, "VR started - Hold TRIGGER to paint")
+            self.report({'INFO'}, "VR started - TRIGGER to paint, Stop VR to exit")
         else:
             self.report({'WARNING'}, "VR started but paint action not registered")
         
@@ -298,6 +304,9 @@ class THREEGDS_OT_StopVRSession(Operator):
     def execute(self, context):
         # Stop matrix updater first
         _stop_vr_matrix_updater()
+        
+        # Restore teleport action for next VR session
+        restore_teleport_action()
         
         if get_vr_session_manager().stop_vr_session():
             self.report({'INFO'}, "VR stopped")

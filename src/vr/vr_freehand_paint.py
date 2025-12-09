@@ -16,6 +16,7 @@ from typing import Optional, List, Tuple
 
 # Import VR action binding for TRIGGER
 from .vr_action_binding import register_paint_action, get_paint_button_state, is_actions_registered
+from .vr_session import get_vr_session_manager
 
 # Import existing painting infrastructure
 from ..operators import get_or_create_paint_session
@@ -298,8 +299,8 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
     def modal(self, context, event):
         """Handle timer events and keyboard input for testing."""
         
-        # Exit on ESC or RIGHTMOUSE
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        # Exit when VR session stops (replaces ESC - allows other VR inputs to work)
+        if not get_vr_session_manager().is_session_running():
             self._finish(context)
             return {'CANCELLED'}
         
@@ -316,7 +317,8 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
         if event.type == 'TIMER':
             self._on_timer_tick(context)
         
-        return {'RUNNING_MODAL'}
+        # PASS_THROUGH allows other VR inputs (movement, teleport) to work simultaneously
+        return {'PASS_THROUGH'}
     
     def _on_timer_tick(self, context):
         """Called every timer tick to sample controller and generate paint."""
