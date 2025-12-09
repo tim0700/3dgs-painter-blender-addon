@@ -282,8 +282,16 @@ class THREEGDS_OT_StartVRSession(Operator):
         # Start continuous view matrix updater
         _start_vr_matrix_updater()
         
-        # Disable teleport so trigger only paints (not teleports)
-        disable_teleport_action()
+        # Disable teleport AFTER session is fully initialized (with delay)
+        # This avoids the race condition crash from modifying during startup
+        def delayed_disable_teleport():
+            """Called after session is fully initialized."""
+            if disable_teleport_action():
+                print("[3DGS VR] Teleport disabled (delayed, safe)")
+            return None  # Don't repeat
+        
+        # Wait 0.5 seconds for session to fully initialize
+        bpy.app.timers.register(delayed_disable_teleport, first_interval=0.5)
         
         # Auto-start freehand paint mode (PASS_THROUGH allows VR movement to work)
         bpy.ops.threegds.vr_freehand_paint('INVOKE_DEFAULT')

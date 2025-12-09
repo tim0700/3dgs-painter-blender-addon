@@ -10,12 +10,22 @@ _paint_action_added = False
 _teleport_original_op = None  # Store original teleport operator for restore
 
 
+class THREEGDS_OT_NoOp(Operator):
+    """No-operation operator - does nothing (used to disable teleport safely)"""
+    bl_idname = "threegds.noop"
+    bl_label = "No Operation"
+    bl_options = {'REGISTER'}
+    
+    def execute(self, context):
+        # Do absolutely nothing
+        return {'FINISHED'}
+
+
 def disable_teleport_action():
     """
     Disable teleport action to prevent it from triggering when using trigger for painting.
     
-    This sets the teleport action's operator to empty string, preventing teleportation
-    while still allowing us to read the trigger value for painting.
+    Uses a no-op operator instead of empty string to prevent wm_operator_create crash.
     """
     global _teleport_original_op
     
@@ -37,9 +47,10 @@ def disable_teleport_action():
             print("[3DGS VR] teleport action not found")
             return False
         
-        # Store original operator and disable it
+        # Store original operator and replace with no-op
+        # Using actual operator instead of empty string prevents crash
         _teleport_original_op = teleport_ami.op
-        teleport_ami.op = ""  # Empty operator = no action
+        teleport_ami.op = "threegds.noop"  # No-op operator - safe, doesn't crash
         
         print(f"[3DGS VR] Teleport disabled (was: {_teleport_original_op})")
         return True
@@ -115,7 +126,7 @@ def add_paint_action(session_state):
         if amb:
             amb.profile = "/interaction_profiles/oculus/touch_controller"
             amb.component_paths.new("/input/b/click")
-            amb.threshold = 0.3
+            amb.threshold = 0.5  # Digital button: use 0.5 (click = 1.0)
             amb.axis0_region = 'ANY'
             amb.axis1_region = 'ANY'
         
@@ -199,6 +210,30 @@ def on_load_post(dummy):
     """Re-add paint action after file load."""
     global _paint_action_added
     _paint_action_added = False
+    # Schedule pre-registration for when VR addon is ready
+    _schedule_pre_registration()
+
+
+def _schedule_pre_registration():
+    """Schedule paint action registration before VR session starts."""
+    def delayed_setup():
+        """Try to register paint action if XR session state exists."""
+        try:
+            xr = bpy.context.window_manager.xr_session_state
+            if xr and not xr.is_running(bpy.context):
+                # VR addon is ready but session not started yet - perfect timing!
+                if add_paint_action(xr):
+                    print("[3DGS VR] Paint action pre-registered (before session start)")
+                    return None  # Success - don't repeat
+        except Exception as e:
+            pass  # XR not ready yet
+        
+        # Retry in 1 second if not ready
+        return 1.0
+    
+    # Start timer to check periodically
+    if not bpy.app.timers.is_registered(delayed_setup):
+        bpy.app.timers.register(delayed_setup, first_interval=0.5)
 
 
 def register():
@@ -216,14 +251,18 @@ def register():
     
     # Register our override
     try:
+        bpy.utils.register_class(THREEGDS_OT_NoOp)  # Register no-op first
         bpy.utils.register_class(THREEGDS_OT_XRSessionToggleOverride)
         print("[3DGS VR] Overrode xr_session_toggle operator")
     except Exception as e:
         print(f"[3DGS VR] Override registration failed: {e}")
     
-    # Register handler
+    # Register handler for file loads
     if on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_load_post)
+    
+    # Schedule pre-registration now (for addon enable without file load)
+    _schedule_pre_registration()
 
 
 def unregister():
@@ -237,6 +276,10 @@ def unregister():
     # Unregister our override
     try:
         bpy.utils.unregister_class(THREEGDS_OT_XRSessionToggleOverride)
+    except:
+        pass
+    try:
+        bpy.utils.unregister_class(THREEGDS_OT_NoOp)
     except:
         pass
     
