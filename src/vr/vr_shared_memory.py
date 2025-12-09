@@ -21,8 +21,9 @@ SHARED_MEMORY_NAME = "Local\\3DGS_Gaussian_Data"
 MAX_GAUSSIANS = 100000
 MAGIC_NUMBER = 0x33444753  # "3DGS" in little-endian
 
-# Struct sizes
-HEADER_SIZE = 4 + 4 + 4 + 4 + 4 + 64 + 64 + 16  # 164 bytes (added camera_rotation quaternion)
+# Struct sizes - must match C++ SharedMemoryHeader
+# magic(4) + version(4) + frame_id(4) + count(4) + flags(4) + view(64) + proj(64) + camera_rot(16) + camera_pos(12) + padding(4)
+HEADER_SIZE = 4 + 4 + 4 + 4 + 4 + 64 + 64 + 16 + 12 + 4  # 180 bytes
 GAUSSIAN_SIZE = 56  # 12 + 16 + 12 + 16 bytes
 BUFFER_SIZE = HEADER_SIZE + (MAX_GAUSSIANS * GAUSSIAN_SIZE)
 
@@ -105,7 +106,8 @@ class SharedMemoryWriter:
     def update_matrices(self,
                         view_matrix: np.ndarray,
                         proj_matrix: np.ndarray,
-                        camera_rotation: Optional[Tuple[float, float, float, float]] = None):
+                        camera_rotation: Optional[Tuple[float, float, float, float]] = None,
+                        camera_position: Optional[Tuple[float, float, float]] = None):
         """
         Update only the view/projection matrices in shared memory header.
         
@@ -154,6 +156,13 @@ class SharedMemoryWriter:
         else:
             header_data += struct.pack('<4f', 1.0, 0.0, 0.0, 0.0)  # Identity
         
+        # Camera position (3 floats = 12 bytes) + padding (4 bytes)
+        if camera_position is not None:
+            header_data += struct.pack('<3f', *camera_position)
+        else:
+            header_data += struct.pack('<3f', 0.0, 0.0, 0.0)
+        header_data += struct.pack('<f', 0.0)  # padding
+        
         self._mmap.seek(0)
         self._mmap.write(header_data)
     
@@ -161,7 +170,8 @@ class SharedMemoryWriter:
                       gaussian_count: int,
                       view_matrix: Optional[np.ndarray],
                       proj_matrix: Optional[np.ndarray],
-                      camera_rotation: Optional[Tuple[float, float, float, float]] = None):
+                      camera_rotation: Optional[Tuple[float, float, float, float]] = None,
+                      camera_position: Optional[Tuple[float, float, float]] = None):
         """Write header to shared memory."""
         if not self._mmap:
             return
@@ -194,6 +204,13 @@ class SharedMemoryWriter:
             header_data += struct.pack('<4f', *camera_rotation)
         else:
             header_data += struct.pack('<4f', 1.0, 0.0, 0.0, 0.0)  # Identity quaternion
+        
+        # Camera position (3 floats = 12 bytes) + padding (4 bytes)
+        if camera_position is not None:
+            header_data += struct.pack('<3f', *camera_position)
+        else:
+            header_data += struct.pack('<3f', 0.0, 0.0, 0.0)
+        header_data += struct.pack('<f', 0.0)  # padding
         
         self._mmap.seek(0)
         self._mmap.write(header_data)

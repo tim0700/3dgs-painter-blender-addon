@@ -323,6 +323,11 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
     def _on_timer_tick(self, context):
         """Called every timer tick to sample controller and generate paint."""
         
+        # Debug counter for periodic logging
+        if not hasattr(self, '_debug_tick_counter'):
+            self._debug_tick_counter = 0
+        self._debug_tick_counter += 1
+        
         # Get controller position
         result = get_controller_tip(context, hand_index=1)  # Right hand
         
@@ -330,6 +335,15 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
             return  # VR not active or controller not tracked
         
         tip_pos, tip_rot = result
+        
+        # DEBUG: Log positions every 30 ticks (~300ms)
+        if self._debug_tick_counter % 30 == 1:
+            wm = context.window_manager
+            if hasattr(wm, 'xr_session_state') and wm.xr_session_state:
+                xr = wm.xr_session_state
+                head_pos = xr.viewer_pose_location
+                print(f"[VR DEBUG] Controller: ({tip_pos.x:.2f}, {tip_pos.y:.2f}, {tip_pos.z:.2f})")
+                print(f"[VR DEBUG] Headset:    ({head_pos.x:.2f}, {head_pos.y:.2f}, {head_pos.z:.2f})")
         
         # NOTE: Matrix updates are now handled by continuous updater in vr_operators.py
         # Removed self._update_vr_matrices(context) to prevent conflicting updates
@@ -346,6 +360,9 @@ class THREEGDS_OT_VRFreehandPaint(Operator):
         
         if is_painting:
             self._continue_stroke(context, tip_pos, tip_rot)
+            # DEBUG: Log when painting
+            if self._debug_tick_counter % 10 == 1:
+                print(f"[VR DEBUG] PAINTING at: ({tip_pos.x:.2f}, {tip_pos.y:.2f}, {tip_pos.z:.2f})")
         
         # Always update brush preview position
         self._update_preview(context, tip_pos, tip_rot)

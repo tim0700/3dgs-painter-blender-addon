@@ -532,6 +532,7 @@ void GaussianRenderer::RenderFromPrimitivesWithMatrices(
     const float* viewMatrix,
     const float* projMatrix,
     const float* cameraRotation,
+    const float* cameraPosition,
     uint32_t viewportWidth,
     uint32_t viewportHeight)
 {
@@ -539,20 +540,13 @@ void GaussianRenderer::RenderFromPrimitivesWithMatrices(
         return;
     }
     
-    // NO ORIGIN OFFSET: Use raw Blender world coordinates
-    // The view matrix from xrLocateViews should handle world-to-view transformation
-    // This should place gaussians at their actual controller positions
-    
-    // Camera Z rotation compensation: Blender VR base pose uses camera as reference
-    // Apply inverse of camera Z rotation (roll) in Blender coordinate space BEFORE conversion
-    float cosZ = 1.0f, sinZ = 0.0f;
-    if (cameraRotation) {
-        float w = cameraRotation[0];
-        float z = cameraRotation[3];
-        float angle = 2.0f * atan2f(z, w);  // Extract Z rotation angle
-        cosZ = cosf(-angle);  // Inverse rotation
-        sinZ = sinf(-angle);
-    }
+    // NOTE: Do NOT apply any transformations to gaussian positions!
+    // Python view matrix is in Blender WORLD space and already handles:
+    // - Viewer position (head tracking)
+    // - Viewer rotation (head rotation)
+    // Gaussians should remain in raw Blender world coordinates to match.
+    (void)cameraPosition;   // Unused - kept for future use
+    (void)cameraRotation;   // Unused - Python view matrix handles rotation
     
     // Prepare instance data: [position(3) + rotation(4) + scale(3) + color(4)] = 14 floats per gaussian
     const int floatsPerInstance = 14;
@@ -562,21 +556,30 @@ void GaussianRenderer::RenderFromPrimitivesWithMatrices(
         int base = i * floatsPerInstance;
         const auto& g = gaussians[i];
         
-        // Use raw Blender world coordinates (NO offset)
-        float bx = g.position[0];
-        float by = g.position[1];
-        float bz = g.position[2];
+        // Use raw Blender world coordinates - NO transformations!
+        // Python view matrix handles world-to-view transformation.
+        instanceData[base + 0] = g.position[0];
+        instanceData[base + 1] = g.position[1];
+        instanceData[base + 2] = g.position[2];
         
-        // Apply camera Z rotation compensation (in Blender XY plane)
-        float rx = cosZ * bx - sinZ * by;
-        float ry = sinZ * bx + cosZ * by;
-        float rz = bz;  // Z unchanged for Z-rotation
-        
-        // Convert from Blender (Z-up, Y-forward) to OpenXR (Y-up, -Z forward)
-        // NO additional offset - raw world coordinates
-        instanceData[base + 0] = rx;    // Blender X → OpenXR X
-        instanceData[base + 1] = rz;    // Blender Z → OpenXR Y (up)
-        instanceData[base + 2] = -ry;   // Blender -Y → OpenXR Z (forward)
+        // DEBUG: Log first gaussian position every ~60 frames
+        static int debugCounter = 0;
+        if (i == 0 && debugCounter++ % 60 == 0) {
+            char logPath[512];
+            const char* tempDir = getenv("TEMP");
+            if (!tempDir) tempDir = "C:\\Temp";
+            snprintf(logPath, sizeof(logPath), "%s\\gaussian_pos_debug.log", tempDir);
+            
+            FILE* f = fopen(logPath, "a");
+            if (f) {
+                fprintf(f, "[C++] Input:  (%.2f, %.2f, %.2f) -> Output: (%.2f, %.2f, %.2f)\n",
+                    g.position[0], g.position[1], g.position[2],
+                    instanceData[base + 0], instanceData[base + 1], instanceData[base + 2]);
+                fprintf(f, "[C++] ViewMatrix[12-14]: (%.2f, %.2f, %.2f)\n",
+                    viewMatrix[12], viewMatrix[13], viewMatrix[14]);
+                fclose(f);
+            }
+        }
         
         instanceData[base + 3] = g.rotation[0];
         instanceData[base + 4] = g.rotation[1];

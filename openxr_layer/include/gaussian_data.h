@@ -43,6 +43,8 @@ struct SharedMemoryHeader {
     float view_matrix[16];       // Optional: Blender's current view
     float proj_matrix[16];       // Optional: Blender's current projection
     float camera_rotation[4];    // Blender camera rotation quaternion (w,x,y,z)
+    float camera_position[3];    // NEW: Blender camera world position (for VR origin offset)
+    float _padding;              // Alignment padding
 };
 
 // ============================================

@@ -50,18 +50,24 @@ def _vr_matrix_update_callback():
         view_mat = (trans_mat @ rot_mat).inverted()
         view_matrix = np.array(view_mat.transposed(), dtype=np.float32).flatten()
         
-        # Get camera rotation for coordinate alignment
+        # Get camera rotation and position for coordinate alignment
         camera = bpy.context.scene.camera
         camera_rotation = None
+        camera_position = None
         if camera:
-            cam_rot = camera.rotation_euler.to_quaternion()
+            # Use matrix_world to get world position (includes parent transforms)
+            cam_pos = camera.matrix_world.translation
+            camera_position = (cam_pos.x, cam_pos.y, cam_pos.z)
+            
+            # Use matrix_world to get world rotation
+            cam_rot = camera.matrix_world.to_quaternion()
             camera_rotation = (cam_rot.w, cam_rot.x, cam_rot.y, cam_rot.z)
         
         # Update shared memory with current matrices
         writer = get_shared_memory_writer()
         if writer.is_open():
             # Only update matrices, not Gaussian data
-            writer.update_matrices(view_matrix, None, camera_rotation)
+            writer.update_matrices(view_matrix, None, camera_rotation, camera_position)
         
     except Exception as e:
         print(f"[VR Matrix] Update error: {e}")

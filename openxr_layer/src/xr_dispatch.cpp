@@ -202,6 +202,16 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
     // ==========================================
     // STEREO 3D RENDERING with ProjectionLayer
     // ==========================================
+    
+    // DEBUG: Log render condition states every 120 frames
+    static int conditionLogCounter = 0;
+    if (conditionLogCounter++ % 120 == 0) {
+        LogXr("RENDER CONDITIONS: quadLayerInit=%d, projLayerInit=%d, renderCount=%llu",
+            g_layerState.quadLayerInitialized,
+            GetProjectionLayer().IsInitialized(),
+            g_layerState.gaussian_render_count);
+    }
+    
     if (g_layerState.quadLayerInitialized && GetProjectionLayer().IsInitialized()) {
         // Initialize GaussianRenderer if needed
         static bool rendererInitialized = false;
@@ -241,16 +251,35 @@ XrResult XRAPI_CALL gaussian_xrEndFrame(
                         // Use Python matrix if available, otherwise fall back to local
                         const float* viewMatrix = hasPythonMatrix ? pythonViewMatrix : localViewMatrix;
                         
-                        // Get camera rotation from shared memory header for coordinate alignment
+                        // Get camera rotation and position from shared memory header
                         const float* cameraRotation = buffer->header.camera_rotation;
+                        const float* cameraPosition = buffer->header.camera_position;
                         
                         if (viewMatrix && projMatrix) {
+                            // DEBUG: Log that we're about to render
+                            static int renderCallCounter = 0;
+                            if (renderCallCounter++ % 120 == 0) {
+                                LogXr("CALLING RENDER: count=%d, eye=%d, pos[0]=(%.2f,%.2f,%.2f)",
+                                    buffer->header.gaussian_count, eye,
+                                    buffer->gaussians[0].position[0],
+                                    buffer->gaussians[0].position[1],
+                                    buffer->gaussians[0].position[2]);
+                                // View matrix translation is in [12,13,14] for column-major
+                                LogXr("VIEW MATRIX: hasPython=%d, trans=(%.2f,%.2f,%.2f)",
+                                    hasPythonMatrix ? 1 : 0,
+                                    viewMatrix[12], viewMatrix[13], viewMatrix[14]);
+                                // Camera position offset
+                                LogXr("CAM OFFSET: (%.2f,%.2f,%.2f)",
+                                    cameraPosition[0], cameraPosition[1], cameraPosition[2]);
+                            }
+                            
                             GetGaussianRenderer().RenderFromPrimitivesWithMatrices(
                                 buffer->gaussians,
                                 buffer->header.gaussian_count,
                                 viewMatrix,
                                 projMatrix,
                                 cameraRotation,
+                                cameraPosition,
                                 1024, 1024  // viewport size
                             );
                         }
