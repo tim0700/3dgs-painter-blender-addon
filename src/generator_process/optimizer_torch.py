@@ -81,7 +81,8 @@ class TorchGaussianOptimizer:
         target_alpha: Optional[np.ndarray] = None,
         render_width: int = 256,
         render_height: int = 256,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        target_size: float = 0.15
     ):
         """
         Initialize PyTorch optimizer.
@@ -94,6 +95,7 @@ class TorchGaussianOptimizer:
             render_width: Render width for optimization
             render_height: Render height for optimization
             device: 'cuda' or 'cpu', auto-detect if None
+            target_size: World space extent of brush (default 0.15 to match default brushes)
         """
         # Ensure gsplat is available before proceeding
         _ensure_gsplat()
@@ -108,6 +110,7 @@ class TorchGaussianOptimizer:
         self.n_gaussians = len(gaussians_data)
         self.width = render_width
         self.height = render_height
+        self.target_size = target_size  # Store for camera matrix calculation
         
         # Extract gaussian parameters from structured array
         # Position: use x, y from position, add z=0
@@ -242,7 +245,15 @@ class TorchGaussianOptimizer:
         ).unsqueeze(0)  # [1, 4, 4]
         
         # Projection matrix for orthographic
-        fx = fy = min(self.width, self.height) / 2.0
+        # Focal length determines how world space maps to pixels
+        # We want world space [-target_size, +target_size] to fill the render
+        # Since render dimensions preserve aspect ratio of original image,
+        # we use the same scale factor for both axes based on the larger dimension
+        coverage = 0.9
+        # Use max dimension to ensure the entire brush fits in the render
+        scale_factor = max(self.width, self.height) * coverage / (2.0 * self.target_size)
+        fx = scale_factor
+        fy = scale_factor
         cx = self.width / 2.0
         cy = self.height / 2.0
         
@@ -251,6 +262,8 @@ class TorchGaussianOptimizer:
             dtype=torch.float32,
             device=self.device,
         ).unsqueeze(0)  # [1, 3, 3]
+        
+        logger.info(f"[TorchOptimizer] Camera: fx={fx:.1f}, fy={fy:.1f}, target_size={self.target_size}, render={self.width}x{self.height}")
     
     def _render_differentiable(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -452,7 +465,66 @@ class TorchGaussianOptimizer:
             self.opacities.data = best_state['opacities']
             logger.info(f"[TorchOptimizer] Restored best state (loss={best_loss:.4f})")
         
+        # Prune large+transparent gaussians that cause glow effect
+        self._prune_glow_gaussians()
+        
         return self._tensors_to_structured_array()
+    
+    def _prune_glow_gaussians(self):
+        """
+        Remove gaussians that create glow/halo effect around the brush.
+        
+        Criteria for removal:
+        1. Large scale + low opacity (creates soft glow)
+        2. Position outside alpha mask (stray gaussians)
+        """
+        with torch.no_grad():
+            n_original = self.n_gaussians
+            
+            # Calculate average scale (geometric mean) for each gaussian
+            avg_scales = self.scales.mean(dim=1)  # [N]
+            
+            # Thresholds
+            scale_threshold = 0.08  # Large gaussians
+            opacity_threshold = 0.1  # Low opacity
+            
+            # Criterion 1: Large scale + low opacity = glow
+            is_glow = (avg_scales > scale_threshold) & (self.opacities < opacity_threshold)
+            
+            # Criterion 2: Check if position is inside alpha mask
+            # Map gaussian positions to pixel coordinates
+            means_px_x = ((self.means[:, 0] / self.target_size + 1.0) * 0.5 * self.width).long()
+            means_px_y = ((1.0 - self.means[:, 1] / self.target_size) * 0.5 * self.height).long()
+            
+            # Clamp to valid range
+            means_px_x = means_px_x.clamp(0, self.width - 1)
+            means_px_y = means_px_y.clamp(0, self.height - 1)
+            
+            # Check alpha at each gaussian position
+            alpha_at_pos = self.alpha_mask[means_px_y, means_px_x]
+            is_outside_mask = alpha_at_pos < 0.5
+            
+            # Combined: remove if glow OR (outside mask AND low opacity)
+            should_remove = is_glow | (is_outside_mask & (self.opacities < 0.5))
+            keep_mask = ~should_remove
+            
+            n_removed = should_remove.sum().item()
+            
+            if n_removed > 0 and keep_mask.sum() > 0:
+                # Keep only the valid gaussians
+                self.means = torch.nn.Parameter(self.means[keep_mask])
+                self.scales = torch.nn.Parameter(self.scales[keep_mask])
+                self.quats = torch.nn.Parameter(self.quats[keep_mask])
+                self.opacities = torch.nn.Parameter(self.opacities[keep_mask])
+                self.colors = self.colors[keep_mask]
+                self.n_gaussians = keep_mask.sum().item()
+                
+                logger.info(
+                    f"[TorchOptimizer] Pruned {n_removed} glow gaussians "
+                    f"({n_original} -> {self.n_gaussians})"
+                )
+            else:
+                logger.info(f"[TorchOptimizer] No glow gaussians to prune")
     
     def _tensors_to_structured_array(self) -> np.ndarray:
         """Convert optimized tensors back to structured numpy array."""
@@ -496,7 +568,8 @@ def optimize_gaussians(
     target_image: np.ndarray,
     target_alpha: Optional[np.ndarray] = None,
     iterations: int = 50,
-    render_size: int = 256
+    render_size: int = 256,
+    target_size: float = 0.15
 ) -> np.ndarray:
     """
     Convenience function to optimize gaussians.
@@ -507,6 +580,7 @@ def optimize_gaussians(
         target_alpha: Optional alpha mask (H, W) in [0, 1]
         iterations: Number of optimization iterations
         render_size: Size for rendering during optimization
+        target_size: World space extent of brush (default 0.15)
     
     Returns:
         Optimized gaussians as structured array
@@ -516,7 +590,8 @@ def optimize_gaussians(
         target_image=target_image,
         target_alpha=target_alpha,
         render_width=render_size,
-        render_height=render_size
+        render_height=render_size,
+        target_size=target_size
     )
     
     return optimizer.optimize(iterations=iterations)

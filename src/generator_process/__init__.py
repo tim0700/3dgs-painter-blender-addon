@@ -466,7 +466,9 @@ class NPRGenerator(Actor):
         target_image: list,
         target_alpha: list = None,
         iterations: int = 50,
-        render_size: int = 256
+        render_width: int = 256,
+        render_height: int = 256,
+        target_size: float = 0.15
     ) -> dict:
         """
         Optimize gaussian parameters using gsplat differentiable rendering.
@@ -480,7 +482,9 @@ class NPRGenerator(Actor):
             target_image: Target RGB image as nested list (H, W, 3) in [0, 1]
             target_alpha: Optional alpha mask as nested list (H, W) in [0, 1]
             iterations: Number of optimization iterations
-            render_size: Size for rendering during optimization
+            render_width: Width for rendering during optimization
+            render_height: Height for rendering during optimization
+            target_size: World space extent of brush (default 0.15)
         
         Returns:
             dict with 'success', 'gaussians' (optimized), 'final_loss'
@@ -559,8 +563,9 @@ class NPRGenerator(Actor):
                 gaussians_data=gaussians_np,
                 target_image=target_np,
                 target_alpha=alpha_np,
-                render_width=render_size,
-                render_height=render_size
+                render_width=render_width,
+                render_height=render_height,
+                target_size=target_size
             )
             
             optimized_np = optimizer.optimize(iterations=iterations)

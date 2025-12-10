@@ -57,6 +57,10 @@ class BrushConversionConfig:
     position_jitter: float = 0.005
     rotation_jitter_deg: float = 2.0
     
+    # Brush size in world space (radius, matches default brush radius)
+    # Default circular brush uses radius=0.15, so we use the same
+    target_size: float = 0.15
+    
     # gsplat optimization (differentiable rendering)
     enable_optimization: bool = True
     optimization_iterations: int = 50
@@ -397,7 +401,8 @@ class BrushConverter:
         
         # Preserve aspect ratio
         aspect = w / h
-        target_size = 0.5  # World space extent
+        # Target size from config (matches default brush radius ~0.15)
+        target_size = self.config.target_size
         
         if w > h:
             x_range = target_size
@@ -405,6 +410,10 @@ class BrushConverter:
         else:
             x_range = target_size * aspect
             y_range = target_size
+        
+        # Store ranges in features for coordinate conversion in other methods
+        features['x_range'] = x_range
+        features['y_range'] = y_range
         
         # Create coordinate grids
         xx, yy = np.meshgrid(
@@ -591,10 +600,14 @@ class BrushConverter:
         h, w = image_shape
         thickness = features['thickness']
         
+        # Get coordinate ranges from features
+        x_range = features.get('x_range', self.config.target_size)
+        y_range = features.get('y_range', self.config.target_size)
+        
         for i, (pos, color, normal) in enumerate(zip(points, colors, normals)):
-            # Map world position to image space
-            x_img = int((pos[0] + 0.5) * w)
-            y_img = int((0.5 - pos[1]) * h)
+            # Map world position to image space using correct range for each axis
+            x_img = int((pos[0] / x_range + 1.0) * 0.5 * w)
+            y_img = int((1.0 - pos[1] / y_range) * 0.5 * h)
             x_img = np.clip(x_img, 0, w - 1)
             y_img = np.clip(y_img, 0, h - 1)
             
@@ -659,9 +672,13 @@ class BrushConverter:
         
         h, w = image_shape
         
-        # Map world to image space
-        x_img = int((position[0] + 0.5) * w)
-        y_img = int((0.5 - position[1]) * h)
+        # Get coordinate ranges from features
+        x_range = features.get('x_range', self.config.target_size)
+        y_range = features.get('y_range', self.config.target_size)
+        
+        # Map world to image space using correct range for each axis
+        x_img = int((position[0] / x_range + 1.0) * 0.5 * w)
+        y_img = int((1.0 - position[1] / y_range) * 0.5 * h)
         
         if not (0 <= x_img < w and 0 <= y_img < h):
             return None
@@ -717,10 +734,14 @@ class BrushConverter:
         thickness = features['thickness']
         grad_magnitude = features.get('grad_magnitude')
         
+        # Get coordinate ranges from features
+        x_range = features.get('x_range', self.config.target_size)
+        y_range = features.get('y_range', self.config.target_size)
+        
         for g in gaussians:
-            # Map to image space
-            x_img = int((g.position[0] + 0.5) * w)
-            y_img = int((0.5 - g.position[1]) * h)
+            # Map to image space using correct range for each axis
+            x_img = int((g.position[0] / x_range + 1.0) * 0.5 * w)
+            y_img = int((1.0 - g.position[1] / y_range) * 0.5 * h)
             x_img = np.clip(x_img, 0, w - 1)
             y_img = np.clip(y_img, 0, h - 1)
             
@@ -797,14 +818,26 @@ class BrushConverter:
                     'color': g.color.tolist()
                 })
             
-            # Call subprocess optimization
+            # Compute render dimensions preserving aspect ratio
+            h, w = image.shape[:2]
+            max_size = self.config.optimization_render_size
+            if w > h:
+                render_width = max_size
+                render_height = max(1, int(max_size * h / w))
+            else:
+                render_height = max_size
+                render_width = max(1, int(max_size * w / h))
+            
+            # Call subprocess optimization with aspect-preserving dimensions
             generator = get_generator()
             future = generator.optimize_brush_gaussians(
                 gaussians_data=gaussians_data,
                 target_image=target_rgb.tolist(),
                 target_alpha=alpha_mask.tolist(),
                 iterations=self.config.optimization_iterations,
-                render_size=self.config.optimization_render_size
+                render_width=render_width,
+                render_height=render_height,
+                target_size=self.config.target_size
             )
             result = future.result() if hasattr(future, 'result') else future
             

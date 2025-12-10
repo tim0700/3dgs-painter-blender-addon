@@ -1158,12 +1158,15 @@ class THREEGDS_OT_ConvertImageToBrush(Operator):
         scene = context.scene
         
         # Get conversion config from scene properties
+        optimization_iters = scene.npr_conversion_optimization_iterations
         config = BrushConversionConfig(
             num_gaussians=scene.npr_conversion_num_gaussians,
             depth_profile=scene.npr_conversion_depth_profile.lower(),
             skeleton_depth_weight=scene.npr_conversion_skeleton_weight,
             thickness_depth_weight=scene.npr_conversion_thickness_weight,
             enable_elongation=scene.npr_conversion_enable_elongation,
+            enable_optimization=optimization_iters > 0,
+            optimization_iterations=optimization_iters,
         )
         
         try:

@@ -232,6 +232,9 @@ class NPR_PT_BrushCreationPanel(Panel):
         col.prop(scene, "npr_conversion_enable_elongation", text="Enable Elongation")
         
         col.separator()
+        col.prop(scene, "npr_conversion_optimization_iterations", text="Optimization Iters")
+        
+        col.separator()
         col.operator("threegds.convert_image_to_brush", text="Convert Image...", icon='IMPORT')
 
 
@@ -425,6 +428,14 @@ def _register_scene_props():
         default=True
     )
     
+    bpy.types.Scene.npr_conversion_optimization_iterations = bpy.props.IntProperty(
+        name="Optimization Iterations",
+        description="Number of gsplat optimization iterations (0 = disable optimization)",
+        default=50,
+        min=0,
+        max=500
+    )
+    
     # Brush library properties (Phase 4.5)
     bpy.types.Scene.npr_brush_library = bpy.props.CollectionProperty(
         type=NPR_BrushItem,
@@ -463,6 +474,7 @@ def _unregister_scene_props():
         'npr_conversion_skeleton_weight',
         'npr_conversion_thickness_weight',
         'npr_conversion_enable_elongation',
+        'npr_conversion_optimization_iterations',
         # Phase 4.5 brush library properties
         'npr_brush_library',
         'npr_brush_library_index',
